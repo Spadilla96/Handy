@@ -559,7 +559,19 @@ impl AudioRecorder {
         // in run_consumer() downsample to 16kHz. This avoids forcing hardware into
         // a non-native rate which can cause issues on some devices (Bluetooth
         // codecs, certain ALSA drivers, etc.).
-        let default_config = device.default_input_config()?;
+        let default_config = match device.default_input_config() {
+            Ok(config) => config,
+            Err(input_err) => {
+                // A render (output) device has no input configs; on Windows it
+                // is captured in WASAPI loopback mode using its mix format.
+                #[cfg(target_os = "windows")]
+                if let Ok(config) = device.default_output_config() {
+                    log::info!("Device has no input config; capturing its output (loopback)");
+                    return Ok(config);
+                }
+                return Err(input_err.into());
+            }
+        };
         let target_rate = default_config.sample_rate();
 
         // Try to find the best sample format at the device's default rate

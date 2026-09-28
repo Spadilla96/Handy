@@ -256,6 +256,16 @@
       "volume": {
         "title": "Volumen",
         "description": "Ajusta el volumen de los sonidos de retroalimentación de audio"
+      },
+      "audioSource": {
+        "title": "Fuente de audio",
+        "description": "Graba desde tu micrófono o transcribe el audio que reproduce tu equipo (reuniones, videos).",
+        "microphone": "Micrófono",
+        "system": "Audio del sistema"
+      },
+      "systemAudioDevice": {
+        "title": "Dispositivo de audio del sistema",
+        "description": "Dispositivo de salida cuyo sonido se transcribe."
       }
     },
     "advanced": {

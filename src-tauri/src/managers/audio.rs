@@ -1,3 +1,5 @@
+#[cfg(target_os = "windows")]
+use crate::audio_toolkit::list_output_devices;
 use crate::audio_toolkit::{
     list_input_devices,
     vad::{
@@ -8,7 +10,7 @@ use crate::audio_toolkit::{
 };
 use crate::helpers::clamshell;
 use crate::managers::transcription::StreamRouter;
-use crate::settings::{get_settings, write_settings, AppSettings, VadBackend};
+use crate::settings::{get_settings, write_settings, AppSettings, AudioSource, VadBackend};
 use crate::utils;
 use log::{debug, error, info, trace, warn};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -471,7 +473,57 @@ impl AudioRecordingManager {
         *self.cached_device.lock().unwrap() = None;
     }
 
+    /// Resolve the output device whose playback is captured in system-audio
+    /// mode. cpal's WASAPI backend opens an input stream on a render device in
+    /// loopback mode, so the rest of the capture pipeline is unchanged.
+    #[cfg(target_os = "windows")]
+    fn resolve_system_audio_device(&self, settings: &AppSettings) -> MicrophoneResolution {
+        use cpal::traits::HostTrait;
+
+        let cache_key = format!(
+            "system:{}",
+            settings.system_audio_device.as_deref().unwrap_or("")
+        );
+        if let Some((cached_name, device)) = self.cached_device.lock().unwrap().as_ref() {
+            if *cached_name == cache_key {
+                return MicrophoneResolution {
+                    device: Some(device.clone()),
+                    unavailable_selected_microphone: None,
+                };
+            }
+        }
+
+        let named = settings.system_audio_device.as_ref().and_then(|name| {
+            match list_output_devices() {
+                Ok(devices) => devices
+                    .into_iter()
+                    .find(|d| &d.name == name)
+                    .map(|d| d.device),
+                Err(e) => {
+                    debug!("Failed to list output devices, using default: {}", e);
+                    None
+                }
+            }
+        });
+        let device =
+            named.or_else(|| crate::audio_toolkit::get_cpal_host().default_output_device());
+        if let Some(d) = &device {
+            *self.cached_device.lock().unwrap() = Some((cache_key, d.clone()));
+        } else {
+            warn!("No output device found for system audio capture");
+        }
+        MicrophoneResolution {
+            device,
+            unavailable_selected_microphone: None,
+        }
+    }
+
     fn resolve_microphone_device(&self, settings: &AppSettings) -> MicrophoneResolution {
+        #[cfg(target_os = "windows")]
+        if settings.audio_source == AudioSource::System {
+            return self.resolve_system_audio_device(settings);
+        }
+
         let desired = self.desired_microphone(settings);
         let (device_name, selected_microphone) = match desired {
             DesiredMicrophone::Default => {
@@ -585,7 +637,8 @@ impl AudioRecordingManager {
     /// restore it instead of unconditionally unmuting.
     pub fn apply_mute(&self) {
         let settings = get_settings(&self.app_handle);
-        if !settings.mute_while_recording {
+        // Muting the output would silence the very audio being captured.
+        if !settings.mute_while_recording || settings.audio_source == AudioSource::System {
             return;
         }
 

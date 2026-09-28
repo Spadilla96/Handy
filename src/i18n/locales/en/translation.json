@@ -256,6 +256,16 @@
       "volume": {
         "title": "Volume",
         "description": "Adjust the volume of audio feedback sounds"
+      },
+      "audioSource": {
+        "title": "Audio Source",
+        "description": "Record from your microphone, or transcribe the audio your computer is playing (meetings, videos).",
+        "microphone": "Microphone",
+        "system": "System audio"
+      },
+      "systemAudioDevice": {
+        "title": "System Audio Device",
+        "description": "Output device whose playback is transcribed."
       }
     },
     "advanced": {

@@ -325,6 +325,16 @@ pub enum VadBackend {
     Earshot,
 }
 
+/// Where recordings capture audio from. `System` records what the computer is
+/// playing (WASAPI loopback on an output device) and is Windows-only.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioSource {
+    #[default]
+    Microphone,
+    System,
+}
+
 #[derive(Clone, Serialize, Deserialize, Type)]
 #[serde(transparent)]
 pub(crate) struct SecretMap(HashMap<String, String>);
@@ -415,6 +425,12 @@ pub struct AppSettings {
     pub clamshell_microphone: Option<String>,
     #[serde(default)]
     pub selected_output_device: Option<String>,
+    #[serde(default)]
+    pub audio_source: AudioSource,
+    /// Output device captured when `audio_source` is `System`.
+    /// None means the system default output device.
+    #[serde(default)]
+    pub system_audio_device: Option<String>,
     #[serde(default = "default_translate_to_english")]
     pub translate_to_english: bool,
     #[serde(default = "default_selected_language")]
@@ -927,6 +943,8 @@ pub fn get_default_settings() -> AppSettings {
         selected_channel: None,
         clamshell_microphone: None,
         selected_output_device: None,
+        audio_source: AudioSource::default(),
+        system_audio_device: None,
         translate_to_english: false,
         selected_language: "auto".to_string(),
         overlay_position: default_overlay_position(),

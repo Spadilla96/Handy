@@ -8,6 +8,7 @@ import type {
   OrtAcceleratorSetting,
   ShortcutActivation,
   VadBackend,
+  AudioSource,
 } from "@/bindings";
 import { commands } from "@/bindings";
 import { toast } from "sonner";
@@ -126,6 +127,13 @@ const settingUpdaters: {
         ? "default"
         : (value as string),
     ),
+  audio_source: (value) => commands.setAudioSource(value as AudioSource),
+  system_audio_device: (value) =>
+    commands.setSystemAudioDevice(
+      (value as string) === "Default" || value === null
+        ? "default"
+        : (value as string),
+    ),
   recording_retention_period: (value) =>
     commands.updateRecordingRetentionPeriod(value as string),
   translate_to_english: (value) =>
@@ -237,6 +245,7 @@ export const useSettingsStore = create<SettingsStore>()(
             clamshell_microphone: settings.clamshell_microphone ?? "Default",
             selected_output_device:
               settings.selected_output_device ?? "Default",
+            system_audio_device: settings.system_audio_device ?? "Default",
           };
           set({ settings: normalizedSettings, isLoading: false });
         } else {

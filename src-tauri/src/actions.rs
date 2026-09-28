@@ -596,7 +596,14 @@ impl ShortcutAction for TranscribeAction {
                     // first real input callback rather than Stream::play() or a
                     // fixed delay. The helper returns immediately when feedback
                     // is disabled; mute still follows the same readiness point.
-                    if rm_clone.is_recording_readiness_current(generation) {
+                    // In system-audio mode the chime would be captured by the
+                    // loopback stream, so skip it.
+                    let capturing_system_audio = crate::settings::get_settings(&app_clone)
+                        .audio_source
+                        == crate::settings::AudioSource::System;
+                    if rm_clone.is_recording_readiness_current(generation)
+                        && !capturing_system_audio
+                    {
                         play_feedback_sound_blocking(&app_clone, SoundType::Start);
                     }
                     if rm_clone.is_recording_readiness_current(generation) {

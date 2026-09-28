@@ -1,7 +1,7 @@
 use crate::audio_feedback;
 use crate::audio_toolkit::audio::{list_input_devices, list_output_devices, AudioRecorder};
 use crate::managers::audio::{AudioRecordingManager, MicrophoneMode};
-use crate::settings::{get_settings, write_settings};
+use crate::settings::{get_settings, write_settings, AudioSource};
 use log::warn;
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -231,6 +231,41 @@ pub async fn set_selected_microphone(app: AppHandle, device_name: String) -> Res
         .await
         .map_err(|e| format!("audio task join failed: {}", e))?
         .map_err(|e| format!("Failed to update selected device: {}", e))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_audio_source(app: AppHandle, source: AudioSource) -> Result<(), String> {
+    if source == AudioSource::System && !cfg!(target_os = "windows") {
+        return Err("System audio capture is only supported on Windows".to_string());
+    }
+    let mut settings = get_settings(&app);
+    settings.audio_source = source;
+    write_settings(&app, settings);
+
+    let rm = app.state::<Arc<AudioRecordingManager>>().inner().clone();
+    tokio::task::spawn_blocking(move || rm.update_selected_device())
+        .await
+        .map_err(|e| format!("audio task join failed: {}", e))?
+        .map_err(|e| format!("Failed to update audio source: {}", e))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn set_system_audio_device(app: AppHandle, device_name: String) -> Result<(), String> {
+    let mut settings = get_settings(&app);
+    settings.system_audio_device = if device_name == "default" {
+        None
+    } else {
+        Some(device_name)
+    };
+    write_settings(&app, settings);
+
+    let rm = app.state::<Arc<AudioRecordingManager>>().inner().clone();
+    tokio::task::spawn_blocking(move || rm.update_selected_device())
+        .await
+        .map_err(|e| format!("audio task join failed: {}", e))?
+        .map_err(|e| format!("Failed to update system audio device: {}", e))
 }
 
 #[tauri::command]
