@@ -118,15 +118,20 @@ fn run() -> Result<()> {
     let (asr_tx, asr_rx) = mpsc::channel::<Msg>();
     let (diar_tx, diar_rx) = mpsc::channel::<Msg>();
     let (ready_tx, ready_rx) = mpsc::channel::<Result<i32>>();
+    // ggml-vulkan device setup is not safe to run from two threads at once.
+    let init_lock = Mutex::new(());
 
     std::thread::scope(|s| -> Result<()> {
         // ASR thread: owns the recognizer and its stream.
         {
-            let (nemo, shared, ready_tx, args) = (&nemo, &shared, ready_tx.clone(), &args);
+            let (nemo, shared, ready_tx, args, init_lock) =
+                (&nemo, &shared, ready_tx.clone(), &args, &init_lock);
             s.spawn(move || {
-                let (mut rec, gpu) = match create_with_fallback(args.gpu, |g| {
-                    Recognizer::new(nemo, &args.asr_model, g)
-                }) {
+                let created = {
+                    let _guard = init_lock.lock().unwrap();
+                    create_with_fallback(args.gpu, |g| Recognizer::new(nemo, &args.asr_model, g))
+                };
+                let (mut rec, gpu) = match created {
                     Ok(v) => v,
                     Err(e) => {
                         let _ = ready_tx.send(Err(e.context("loading the ASR model")));
@@ -143,11 +148,14 @@ fn run() -> Result<()> {
         }
         // Diarization thread: owns the Sortformer stream.
         {
-            let (nemo, shared, ready_tx, args) = (&nemo, &shared, ready_tx.clone(), &args);
+            let (nemo, shared, ready_tx, args, init_lock) =
+                (&nemo, &shared, ready_tx.clone(), &args, &init_lock);
             s.spawn(move || {
-                let (mut diar, gpu) = match create_with_fallback(args.gpu, |g| {
-                    Diarizer::new(nemo, &args.diar_model, g)
-                }) {
+                let created = {
+                    let _guard = init_lock.lock().unwrap();
+                    create_with_fallback(args.gpu, |g| Diarizer::new(nemo, &args.diar_model, g))
+                };
+                let (mut diar, gpu) = match created {
                     Ok(v) => v,
                     Err(e) => {
                         let _ = ready_tx.send(Err(e.context("loading the diarization model")));
