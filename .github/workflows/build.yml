@@ -532,7 +532,10 @@ jobs:
           cargo build --release --manifest-path meeting-worker/Cargo.toml
           if ($LASTEXITCODE -ne 0) { throw "meeting worker build failed" }
           Copy-Item meeting-worker/target/release/handy-meeting-worker.exe $dest -Force
-          Get-ChildItem src-tauri/transcribe-libs -Include "vcruntime140*.dll","msvcp140*.dll" -Recurse | Copy-Item -Destination $dest -Force
+          # App-local VC++ runtime (the dirs located by the step above).
+          foreach ($dir in ($env:HANDY_VC_REDIST_DIRS -split ";")) {
+            Get-ChildItem $dir -Filter "*.dll" | Where-Object { $_.Name -like "vcruntime140*" -or $_.Name -like "msvcp140*" } | Copy-Item -Destination $dest -Force
+          }
           Get-ChildItem $dest | Select-Object Name, Length
 
       - name: Build with Tauri
