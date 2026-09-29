@@ -167,13 +167,14 @@ mod tests {
     #[test]
     fn recent_and_interim_words_are_provisional() {
         let segs = [seg(0.0, 10.0, 1)];
-        let finals = [w("uno", 1.0, 1.2), w("dos", 8.0, 8.2)];
-        let interim = [w("tres", 8.4, 8.6)];
-        let u = build_utterances(&finals, &interim, &segs, 5.0);
+        let finals = [w("uno", 1.0, 1.2), w("dos", 2.0, 2.2)];
+        let interim = [w("tres", 2.4, 2.6)];
+        let u = build_utterances(&finals, &interim, &segs, 1.5);
         assert_eq!(u.len(), 1);
         assert!(u[0].provisional);
+        assert_eq!(u[0].word_count, 3);
 
-        let u = build_utterances(&finals[..1], &[], &segs, 5.0);
+        let u = build_utterances(&finals[..1], &[], &segs, 1.5);
         assert!(!u[0].provisional);
     }
 }
