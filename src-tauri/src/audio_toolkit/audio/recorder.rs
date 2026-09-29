@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     io::Error,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -170,6 +171,16 @@ impl AudioRecorder {
     }
 
     pub fn open(&mut self, device: Option<Device>) -> Result<(), Box<dyn std::error::Error>> {
+        self.open_mixed(device, None)
+    }
+
+    /// Open `device` as the primary capture stream and, when given, mix
+    /// `secondary` (e.g. system playback captured via loopback) into it.
+    pub fn open_mixed(
+        &mut self,
+        device: Option<Device>,
+        secondary: Option<Device>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         if self.worker_handle.is_some() {
             if !self.needs_reopen() {
                 return Ok(()); // already open
@@ -203,7 +214,16 @@ impl AudioRecorder {
 
         let worker = std::thread::spawn(move || {
             let transport = Arc::new(CaptureTransportState::default());
-            let init_result = (|| -> Result<(cpal::Stream, u32, Consumer<f32>), String> {
+            let init_result = (|| -> Result<
+                (
+                    cpal::Stream,
+                    u32,
+                    Consumer<f32>,
+                    Option<SecondaryStream>,
+                    bool,
+                ),
+                String,
+            > {
                 let config_started = Instant::now();
                 let device_name = thread_device.name().unwrap_or_default();
                 let cached_config = config_cache
@@ -246,52 +266,14 @@ impl AudioRecorder {
                 }
 
                 let build_started = Instant::now();
-                let (stream, sample_consumer) = match config.sample_format() {
-                    cpal::SampleFormat::U8 => AudioRecorder::build_stream::<u8>(
-                        &thread_device,
-                        &config,
-                        channels,
-                        selected_channel,
-                        Arc::clone(&transport),
-                        Arc::clone(&stream_error),
-                    ),
-                    cpal::SampleFormat::I8 => AudioRecorder::build_stream::<i8>(
-                        &thread_device,
-                        &config,
-                        channels,
-                        selected_channel,
-                        Arc::clone(&transport),
-                        Arc::clone(&stream_error),
-                    ),
-                    cpal::SampleFormat::I16 => AudioRecorder::build_stream::<i16>(
-                        &thread_device,
-                        &config,
-                        channels,
-                        selected_channel,
-                        Arc::clone(&transport),
-                        Arc::clone(&stream_error),
-                    ),
-                    cpal::SampleFormat::I32 => AudioRecorder::build_stream::<i32>(
-                        &thread_device,
-                        &config,
-                        channels,
-                        selected_channel,
-                        Arc::clone(&transport),
-                        Arc::clone(&stream_error),
-                    ),
-                    cpal::SampleFormat::F32 => AudioRecorder::build_stream::<f32>(
-                        &thread_device,
-                        &config,
-                        channels,
-                        selected_channel,
-                        Arc::clone(&transport),
-                        Arc::clone(&stream_error),
-                    ),
-                    sample_format => {
-                        return Err(format!("Unsupported sample format: {sample_format:?}"));
-                    }
-                }
-                .map_err(|e| format!("Failed to build input stream: {e}"))?;
+                let (stream, sample_consumer) = AudioRecorder::build_stream_for_config(
+                    &thread_device,
+                    &config,
+                    channels,
+                    selected_channel,
+                    Arc::clone(&transport),
+                    Arc::clone(&stream_error),
+                )?;
                 let build_elapsed = build_started.elapsed();
 
                 let play_started = Instant::now();
@@ -312,29 +294,60 @@ impl AudioRecorder {
                     *config_cache.lock().unwrap() = Some((device_name, config));
                 }
 
-                Ok((stream, sample_rate, sample_consumer))
+                let secondary_stream = match &secondary {
+                    Some(device) => Some(AudioRecorder::open_secondary_stream(
+                        device,
+                        Arc::clone(&stream_error),
+                    )?),
+                    None => None,
+                };
+
+                // A render device captured in loopback delivers no callbacks
+                // while nothing is playing, so pausing it cannot be acknowledged.
+                #[cfg(target_os = "windows")]
+                let primary_is_loopback = thread_device.default_input_config().is_err();
+                #[cfg(not(target_os = "windows"))]
+                let primary_is_loopback = false;
+
+                Ok((
+                    stream,
+                    sample_rate,
+                    sample_consumer,
+                    secondary_stream,
+                    primary_is_loopback,
+                ))
             })();
 
             match init_result {
-                Ok((stream, sample_rate, sample_consumer)) => {
+                Ok((stream, sample_rate, sample_consumer, secondary_stream, primary_is_loopback)) => {
                     let _ = init_tx.send(Ok(()));
                     // Timestamp for the play()-returned -> first-samples gap the
                     // init handshake can't see (hardware dependent).
                     let stream_running_at = Instant::now();
-                    let processor = CaptureProcessor::new(
+                    let mut processor = CaptureProcessor::new(
                         sample_rate,
                         vad,
                         level_cb,
                         audio_cb,
                         stream_running_at,
                     );
+                    let (secondary_keepalive, secondary_consumer) = match secondary_stream {
+                        Some(s) => {
+                            processor.enable_secondary(s.sample_rate);
+                            (Some(s.stream), Some(s.consumer))
+                        }
+                        None => (None, None),
+                    };
                     run_consumer(
                         processor,
                         sample_consumer,
+                        secondary_consumer,
+                        primary_is_loopback,
                         cmd_rx,
                         transport,
                         Arc::clone(&stream_error),
                     );
+                    drop(secondary_keepalive);
                     drop(stream);
                 }
                 Err(error_message) => {
@@ -421,6 +434,97 @@ impl AudioRecorder {
         }
         self.device = None;
         Ok(())
+    }
+
+    fn build_stream_for_config(
+        device: &cpal::Device,
+        config: &cpal::SupportedStreamConfig,
+        channels: usize,
+        selected_channel: Option<usize>,
+        transport: Arc<CaptureTransportState>,
+        stream_error: Arc<AtomicBool>,
+    ) -> Result<(cpal::Stream, Consumer<f32>), String> {
+        match config.sample_format() {
+            cpal::SampleFormat::U8 => Self::build_stream::<u8>(
+                device,
+                config,
+                channels,
+                selected_channel,
+                transport,
+                stream_error,
+            ),
+            cpal::SampleFormat::I8 => Self::build_stream::<i8>(
+                device,
+                config,
+                channels,
+                selected_channel,
+                transport,
+                stream_error,
+            ),
+            cpal::SampleFormat::I16 => Self::build_stream::<i16>(
+                device,
+                config,
+                channels,
+                selected_channel,
+                transport,
+                stream_error,
+            ),
+            cpal::SampleFormat::I32 => Self::build_stream::<i32>(
+                device,
+                config,
+                channels,
+                selected_channel,
+                transport,
+                stream_error,
+            ),
+            cpal::SampleFormat::F32 => Self::build_stream::<f32>(
+                device,
+                config,
+                channels,
+                selected_channel,
+                transport,
+                stream_error,
+            ),
+            sample_format => {
+                return Err(format!("Unsupported sample format: {sample_format:?}"));
+            }
+        }
+        .map_err(|e| format!("Failed to build input stream: {e}"))
+    }
+
+    /// Build the secondary (mixed-in) capture stream, e.g. system playback in
+    /// loopback mode. It averages all channels and is never paused.
+    fn open_secondary_stream(
+        device: &cpal::Device,
+        stream_error: Arc<AtomicBool>,
+    ) -> Result<SecondaryStream, String> {
+        let config = Self::get_preferred_config(device)
+            .map_err(|e| format!("Failed to fetch secondary device config: {e}"))?;
+        let sample_rate = config.sample_rate().0;
+        let channels = config.channels() as usize;
+        log::info!(
+            "Mixing in secondary device: {:?}\nSample rate: {}\nChannels: {}\nFormat: {:?}",
+            device.name(),
+            sample_rate,
+            channels,
+            config.sample_format()
+        );
+        let (stream, consumer) = Self::build_stream_for_config(
+            device,
+            &config,
+            channels,
+            None,
+            Arc::new(CaptureTransportState::default()),
+            stream_error,
+        )?;
+        stream
+            .play()
+            .map_err(|e| format!("Failed to start secondary stream: {e}"))?;
+        Ok(SecondaryStream {
+            stream,
+            consumer,
+            sample_rate,
+        })
     }
 
     fn build_stream<T>(
@@ -708,6 +812,65 @@ enum ChunkDisposition {
     Discard,
 }
 
+/// A running secondary capture stream plus the ring its callback feeds.
+struct SecondaryStream {
+    stream: cpal::Stream,
+    consumer: Consumer<f32>,
+    sample_rate: u32,
+}
+
+/// Longest backlog of secondary audio kept for mixing. Bounds the latency a
+/// clock drift between the two devices can accumulate.
+const SECONDARY_MAX_BACKLOG: Duration = Duration::from_millis(200);
+
+/// Secondary audio resampled to the primary rate, waiting to be summed into
+/// primary chunks. Gaps (a silent loopback stream) are mixed in as zeros.
+struct SecondaryMix {
+    resampler: FrameResampler,
+    buf: VecDeque<f32>,
+    max_buf: usize,
+    scratch: Vec<f32>,
+}
+
+impl SecondaryMix {
+    fn new(secondary_rate: u32, primary_rate: u32) -> Self {
+        Self {
+            resampler: FrameResampler::new(
+                secondary_rate as usize,
+                primary_rate as usize,
+                Duration::from_millis(10),
+            ),
+            buf: VecDeque::new(),
+            max_buf: (primary_rate as u128 * SECONDARY_MAX_BACKLOG.as_millis() / 1_000) as usize,
+            scratch: Vec::new(),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.resampler.reset();
+        self.buf.clear();
+    }
+
+    fn push(&mut self, raw: &[f32]) {
+        let buf = &mut self.buf;
+        self.resampler.push(raw, |frame| buf.extend(frame.iter().copied()));
+        let excess = self.buf.len().saturating_sub(self.max_buf);
+        self.buf.drain(..excess);
+    }
+
+    /// Sum buffered secondary audio into `primary`, returning the mixed chunk.
+    fn mix(&mut self, primary: &[f32]) -> &[f32] {
+        self.scratch.clear();
+        let buf = &mut self.buf;
+        self.scratch.extend(
+            primary
+                .iter()
+                .map(|&s| (s + buf.pop_front().unwrap_or(0.0)).clamp(-1.0, 1.0)),
+        );
+        &self.scratch
+    }
+}
+
 /// Converts raw ring samples into 16 kHz frames across recording sessions.
 /// Ring transport stays outside to avoid conflicting borrows during drains.
 struct CaptureProcessor {
@@ -721,6 +884,7 @@ struct CaptureProcessor {
     frame_resampler: FrameResampler,
     max_drain_samples: usize,
     first_chunk_logged: bool,
+    secondary: Option<SecondaryMix>,
 
     // ---- recording-scoped: reset by `begin_recording` ------------------- //
     vad_policy: VadPolicy,
@@ -774,6 +938,7 @@ impl CaptureProcessor {
             frame_resampler,
             max_drain_samples,
             first_chunk_logged: false,
+            secondary: None,
             vad_policy: VadPolicy::Offline,
             processed_samples: Vec::new(),
             awaiting_first_captured_chunk: None,
@@ -783,8 +948,32 @@ impl CaptureProcessor {
         }
     }
 
+    fn enable_secondary(&mut self, secondary_rate: u32) {
+        self.secondary = Some(SecondaryMix::new(secondary_rate, self.in_sample_rate));
+    }
+
+    /// Drain the secondary ring. While recording its audio is queued for
+    /// mixing; otherwise it is discarded so stale audio never leaks in.
+    fn drain_secondary(&mut self, consumer: &mut Consumer<f32>, recording: bool) -> usize {
+        let Some(mix) = self.secondary.as_mut() else {
+            return 0;
+        };
+        let drained = drain_available_samples(consumer, usize::MAX, |raw| {
+            if recording {
+                mix.push(raw);
+            }
+        });
+        if !recording {
+            mix.reset();
+        }
+        drained
+    }
+
     /// Reset per-recording state and arm the first-sample acknowledgement.
     fn begin_recording(&mut self, policy: VadPolicy, ready_tx: mpsc::Sender<()>) {
+        if let Some(mix) = self.secondary.as_mut() {
+            mix.reset();
+        }
         self.awaiting_first_captured_chunk = Some(Instant::now());
         self.capture_ready_tx = Some(ready_tx);
         self.total_dropped_samples = 0;
@@ -832,6 +1021,11 @@ impl CaptureProcessor {
         if disposition == ChunkDisposition::Discard {
             return;
         }
+
+        let raw: &[f32] = match self.secondary.as_mut() {
+            Some(mix) => mix.mix(raw),
+            None => raw,
+        };
 
         if let Some(buckets) = self.visualizer.feed(raw) {
             if let Some(callback) = &self.level_cb {
@@ -923,9 +1117,29 @@ impl CaptureProcessor {
     }
 }
 
+/// Drain the secondary ring (if any) ahead of the primary so its audio is
+/// queued before the primary chunk it gets mixed into.
+fn drain_mixed(
+    processor: &mut CaptureProcessor,
+    primary: &mut Consumer<f32>,
+    secondary: &mut Option<Consumer<f32>>,
+    disposition: ChunkDisposition,
+) -> usize {
+    if let Some(consumer) = secondary.as_mut() {
+        processor.drain_secondary(consumer, disposition == ChunkDisposition::Capture);
+    }
+    processor.drain(primary, disposition)
+}
+
+/// Loopback streams go quiet when nothing plays, so waiting for their pause
+/// acknowledgement only needs to cover one normal callback period.
+const LOOPBACK_PAUSE_ACK_TIMEOUT: Duration = Duration::from_millis(150);
+
 fn run_consumer(
     mut processor: CaptureProcessor,
     mut sample_consumer: Consumer<f32>,
+    mut secondary_consumer: Option<Consumer<f32>>,
+    primary_is_loopback: bool,
     cmd_rx: mpsc::Receiver<Cmd>,
     transport: Arc<CaptureTransportState>,
     stream_error: Arc<AtomicBool>,
@@ -936,7 +1150,9 @@ fn run_consumer(
     loop {
         // Avoid sleeping with queued audio; check commands before each bounded
         // drain so Stop cannot sit behind a multi-second backlog.
-        let mut command = if sample_consumer.slots() > 0 {
+        let has_pending_audio = sample_consumer.slots() > 0
+            || secondary_consumer.as_ref().is_some_and(|c| c.slots() > 0);
+        let mut command = if has_pending_audio {
             match cmd_rx.try_recv() {
                 Ok(command) => Some(command),
                 Err(mpsc::TryRecvError::Empty) => None,
@@ -980,17 +1196,29 @@ fn run_consumer(
                         transport.pause_acknowledged.store(false, Ordering::Relaxed);
                         transport.pause_requested.store(true, Ordering::Release);
                         let pause_started = Instant::now();
+                        let pause_timeout = if primary_is_loopback {
+                            LOOPBACK_PAUSE_ACK_TIMEOUT
+                        } else {
+                            PAUSE_ACK_TIMEOUT
+                        };
                         while !transport.pause_acknowledged.load(Ordering::Acquire)
-                            && pause_started.elapsed() < PAUSE_ACK_TIMEOUT
+                            && pause_started.elapsed() < pause_timeout
                         {
-                            let drained =
-                                processor.drain(&mut sample_consumer, ChunkDisposition::Capture);
+                            let drained = drain_mixed(
+                                &mut processor,
+                                &mut sample_consumer,
+                                &mut secondary_consumer,
+                                ChunkDisposition::Capture,
+                            );
                             if drained == 0 {
                                 std::thread::sleep(Duration::from_millis(1));
                             }
                         }
 
-                        let pause_timed_out = !transport.pause_acknowledged.load(Ordering::Acquire);
+                        // A silent loopback stream simply delivered no callback;
+                        // that is not a capture failure.
+                        let pause_timed_out = !transport.pause_acknowledged.load(Ordering::Acquire)
+                            && !primary_is_loopback;
                         if pause_timed_out {
                             log::warn!("Timed out waiting for the microphone callback to pause");
                             // Preserve the existing recovery model: finish this
@@ -1000,8 +1228,13 @@ fn run_consumer(
 
                         // Everything still in the ring, including the boundary
                         // block, belongs to this recording.
-                        while processor.drain(&mut sample_consumer, ChunkDisposition::Capture) > 0 {
-                        }
+                        while drain_mixed(
+                            &mut processor,
+                            &mut sample_consumer,
+                            &mut secondary_consumer,
+                            ChunkDisposition::Capture,
+                        ) > 0
+                        {}
 
                         // Include drops that raced with the pause request.
                         processor
@@ -1038,7 +1271,12 @@ fn run_consumer(
         } else {
             ChunkDisposition::Discard
         };
-        processor.drain(&mut sample_consumer, disposition);
+        drain_mixed(
+            &mut processor,
+            &mut sample_consumer,
+            &mut secondary_consumer,
+            disposition,
+        );
 
         let overrun_samples = transport.overrun_samples.swap(0, Ordering::AcqRel);
         if recording {

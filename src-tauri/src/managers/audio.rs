@@ -480,19 +480,6 @@ impl AudioRecordingManager {
     fn resolve_system_audio_device(&self, settings: &AppSettings) -> MicrophoneResolution {
         use cpal::traits::HostTrait;
 
-        let cache_key = format!(
-            "system:{}",
-            settings.system_audio_device.as_deref().unwrap_or("")
-        );
-        if let Some((cached_name, device)) = self.cached_device.lock().unwrap().as_ref() {
-            if *cached_name == cache_key {
-                return MicrophoneResolution {
-                    device: Some(device.clone()),
-                    unavailable_selected_microphone: None,
-                };
-            }
-        }
-
         let named = settings.system_audio_device.as_ref().and_then(|name| {
             match list_output_devices() {
                 Ok(devices) => devices
@@ -505,17 +492,27 @@ impl AudioRecordingManager {
                 }
             }
         });
+        // Not cached: `cached_device` holds the microphone in mixed mode, and
+        // resolving the default output device is cheap.
         let device =
             named.or_else(|| crate::audio_toolkit::get_cpal_host().default_output_device());
-        if let Some(d) = &device {
-            *self.cached_device.lock().unwrap() = Some((cache_key, d.clone()));
-        } else {
+        if device.is_none() {
             warn!("No output device found for system audio capture");
         }
         MicrophoneResolution {
             device,
             unavailable_selected_microphone: None,
         }
+    }
+
+    /// The device mixed into the microphone in "microphone + system" mode.
+    fn resolve_secondary_device(&self, settings: &AppSettings) -> Option<cpal::Device> {
+        #[cfg(target_os = "windows")]
+        if settings.audio_source == AudioSource::MicrophoneAndSystem {
+            return self.resolve_system_audio_device(settings).device;
+        }
+        let _ = settings;
+        None
     }
 
     fn resolve_microphone_device(&self, settings: &AppSettings) -> MicrophoneResolution {
@@ -638,7 +635,7 @@ impl AudioRecordingManager {
     pub fn apply_mute(&self) {
         let settings = get_settings(&self.app_handle);
         // Muting the output would silence the very audio being captured.
-        if !settings.mute_while_recording || settings.audio_source == AudioSource::System {
+        if !settings.mute_while_recording || settings.audio_source.captures_system() {
             return;
         }
 
@@ -752,6 +749,7 @@ impl AudioRecordingManager {
         let settings = get_settings(&self.app_handle);
         let resolve_started = Instant::now();
         let mut resolution = self.resolve_microphone_device(&settings);
+        let secondary = self.resolve_secondary_device(&settings);
         let resolve_elapsed = resolve_started.elapsed();
 
         // Ensure VAD is loaded if it wasn't for whatever reason
@@ -762,14 +760,14 @@ impl AudioRecordingManager {
         let open_started = Instant::now();
         let mut recorder_opt = self.recorder.lock().unwrap();
         if let Some(rec) = recorder_opt.as_mut() {
-            if let Err(first_err) = rec.open(resolution.device.clone()) {
+            if let Err(first_err) = rec.open_mixed(resolution.device.clone(), secondary.clone()) {
                 // A cached device or config may have gone stale (unplugged,
                 // rate/format changed). Re-resolve from a fresh enumeration and
                 // retry once before surfacing the error.
                 warn!("Recorder open failed ({first_err}); re-resolving device and retrying once");
                 self.invalidate_device_cache();
                 resolution = self.resolve_microphone_device(&settings);
-                rec.open(resolution.device.clone())
+                rec.open_mixed(resolution.device.clone(), secondary.clone())
                     .map_err(|e| anyhow::anyhow!("Failed to open recorder: {}", e))?;
             }
         }

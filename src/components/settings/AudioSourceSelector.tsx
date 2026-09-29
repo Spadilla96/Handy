@@ -24,6 +24,10 @@ export const AudioSourceSelector: React.FC<AudioSourceSelectorProps> =
         label: t("settings.sound.audioSource.microphone"),
       },
       { value: "system", label: t("settings.sound.audioSource.system") },
+      {
+        value: "microphone_and_system",
+        label: t("settings.sound.audioSource.mixed"),
+      },
     ];
 
     return (

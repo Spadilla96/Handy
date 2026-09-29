@@ -22,8 +22,10 @@ export const GeneralSettings: React.FC = () => {
   const { audioFeedbackEnabled, getSetting } = useSettings();
   const isLinux = type() === "linux";
   const isWindows = type() === "windows";
-  const capturingSystemAudio =
-    isWindows && getSetting("audio_source") === "system";
+  const audioSource = isWindows ? getSetting("audio_source") : "microphone";
+  const usesMicrophone = audioSource !== "system";
+  const usesSystemAudio =
+    audioSource === "system" || audioSource === "microphone_and_system";
   return (
     <div className="max-w-3xl w-full mx-auto space-y-6">
       <SettingsGroup title={t("settings.general.title")}>
@@ -37,14 +39,18 @@ export const GeneralSettings: React.FC = () => {
         {isWindows && (
           <AudioSourceSelector descriptionMode="tooltip" grouped={true} />
         )}
-        {capturingSystemAudio ? (
-          <SystemAudioDeviceSelector descriptionMode="tooltip" grouped={true} />
-        ) : (
+        {usesMicrophone && (
           <>
             <MicrophoneSelector descriptionMode="tooltip" grouped={true} />
             <ChannelSelector descriptionMode="tooltip" grouped={true} />
-            <MuteWhileRecording descriptionMode="tooltip" grouped={true} />
           </>
+        )}
+        {usesSystemAudio && (
+          <SystemAudioDeviceSelector descriptionMode="tooltip" grouped={true} />
+        )}
+        {/* Muting the output would silence the captured system audio. */}
+        {!usesSystemAudio && (
+          <MuteWhileRecording descriptionMode="tooltip" grouped={true} />
         )}
         <AudioFeedback descriptionMode="tooltip" grouped={true} />
         <OutputDeviceSelector

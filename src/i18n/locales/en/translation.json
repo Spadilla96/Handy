@@ -259,9 +259,10 @@
       },
       "audioSource": {
         "title": "Audio Source",
-        "description": "Record from your microphone, or transcribe the audio your computer is playing (meetings, videos).",
+        "description": "Record from your microphone, transcribe the audio your computer is playing (meetings, videos), or mix both to capture both sides of a call. Use headphones when mixing to avoid echo.",
         "microphone": "Microphone",
-        "system": "System audio"
+        "system": "System audio",
+        "mixed": "Microphone + system"
       },
       "systemAudioDevice": {
         "title": "System Audio Device",

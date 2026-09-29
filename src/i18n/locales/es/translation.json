@@ -259,9 +259,10 @@
       },
       "audioSource": {
         "title": "Fuente de audio",
-        "description": "Graba desde tu micrófono o transcribe el audio que reproduce tu equipo (reuniones, videos).",
+        "description": "Graba desde tu micrófono, transcribe el audio que reproduce tu equipo (reuniones, videos) o mezcla ambos para captar las dos partes de una llamada. Usa auriculares al mezclar para evitar eco.",
         "microphone": "Micrófono",
-        "system": "Audio del sistema"
+        "system": "Audio del sistema",
+        "mixed": "Micrófono + sistema"
       },
       "systemAudioDevice": {
         "title": "Dispositivo de audio del sistema",

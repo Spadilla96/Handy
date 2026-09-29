@@ -333,6 +333,15 @@ pub enum AudioSource {
     #[default]
     Microphone,
     System,
+    /// Microphone mixed with system playback (e.g. both sides of a call).
+    MicrophoneAndSystem,
+}
+
+impl AudioSource {
+    /// True when recordings include what the computer is playing.
+    pub fn captures_system(&self) -> bool {
+        matches!(self, AudioSource::System | AudioSource::MicrophoneAndSystem)
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, Type)]

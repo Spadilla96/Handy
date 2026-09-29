@@ -1,6 +1,7 @@
 use super::{
     is_microphone_access_denied, is_no_input_device_error, run_consumer, AudioRecorder,
-    CaptureProcessor, CaptureTransportState, ChunkDisposition, Cmd, VadConfig, VadPolicy,
+    CaptureProcessor, CaptureTransportState, ChunkDisposition, Cmd, SecondaryMix, VadConfig,
+    VadPolicy,
 };
 use crate::audio_toolkit::vad::{VadFrame, VoiceActivityDetector};
 use rtrb::RingBuffer;
@@ -86,6 +87,8 @@ fn shutdown_is_processed_without_audio_samples() {
         run_consumer(
             CaptureProcessor::new(48_000, None, None, None, Instant::now()),
             consumer,
+            None,
+            false,
             cmd_rx,
             Arc::new(CaptureTransportState::default()),
             Arc::new(AtomicBool::new(false)),
@@ -253,6 +256,8 @@ fn repeated_start_stop_cycles_resume_capture_without_leaking_samples() {
         run_consumer(
             processor,
             consumer,
+            None,
+            false,
             cmd_rx,
             consumer_transport,
             Arc::new(AtomicBool::new(false)),
@@ -358,6 +363,8 @@ fn missing_callback_at_stop_marks_stream_for_rebuild_and_returns_samples() {
         run_consumer(
             CaptureProcessor::new(16_000, None, None, None, Instant::now()),
             consumer,
+            None,
+            false,
             cmd_rx,
             worker_transport,
             stream_error,
@@ -415,4 +422,19 @@ fn detects_coreaudio_config_error() {
 fn does_not_match_other_errors_for_no_device() {
     assert!(!is_no_input_device_error("permission denied"));
     assert!(!is_no_input_device_error("device not found"));
+}
+
+#[test]
+fn secondary_mix_pads_gaps_with_zeros_and_bounds_backlog() {
+    let mut mix = SecondaryMix::new(16_000, 16_000);
+    // Nothing buffered yet: the primary passes through unchanged.
+    assert_eq!(mix.mix(&[0.25, -0.5]), &[0.25, -0.5]);
+
+    // Far more secondary audio than the backlog allows is trimmed to 200 ms.
+    mix.push(&vec![0.5; 16_000]);
+    assert!(mix.buf.len() <= 3_200);
+
+    // Buffered audio is summed in and the result stays within [-1, 1].
+    let mixed = mix.mix(&[0.75, 0.0]).to_vec();
+    assert_eq!(mixed, vec![1.0, 0.5]);
 }

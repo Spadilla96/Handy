@@ -236,7 +236,7 @@ pub async fn set_selected_microphone(app: AppHandle, device_name: String) -> Res
 #[tauri::command]
 #[specta::specta]
 pub async fn set_audio_source(app: AppHandle, source: AudioSource) -> Result<(), String> {
-    if source == AudioSource::System && !cfg!(target_os = "windows") {
+    if source.captures_system() && !cfg!(target_os = "windows") {
         return Err("System audio capture is only supported on Windows".to_string());
     }
     let mut settings = get_settings(&app);

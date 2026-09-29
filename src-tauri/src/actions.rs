@@ -600,7 +600,7 @@ impl ShortcutAction for TranscribeAction {
                     // loopback stream, so skip it.
                     let capturing_system_audio = crate::settings::get_settings(&app_clone)
                         .audio_source
-                        == crate::settings::AudioSource::System;
+                        .captures_system();
                     if rm_clone.is_recording_readiness_current(generation)
                         && !capturing_system_audio
                     {
