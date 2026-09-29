@@ -94,6 +94,17 @@ function App() {
     checkOnboardingStatus();
   }, []);
 
+  // The Teams meeting prompt asks us to show the Meetings page (e.g. when
+  // its models still need downloading).
+  useEffect(() => {
+    const unlisten = listen("meeting-open-page", () =>
+      setCurrentSection("meetings"),
+    );
+    return () => {
+      unlisten.then((un) => un());
+    };
+  }, []);
+
   // Initialize RTL direction when language changes
   useEffect(() => {
     initializeRTL(i18n.language);

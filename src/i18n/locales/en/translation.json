@@ -16,7 +16,8 @@
     "postProcessing": "Post Process",
     "history": "History",
     "debug": "Debug",
-    "about": "About"
+    "about": "About",
+    "meetings": "Meetings"
   },
   "onboarding": {
     "subtitle": "To get started, choose a transcription model",
@@ -725,5 +726,57 @@
     "learnMore": "How to fix",
     "recorderBlocked": "Can't record shortcuts right now — macOS Secure Input is blocking key events. Resolve the Secure Input warning first.",
     "dismiss": "Dismiss"
+  },
+  "meetings": {
+    "title": "Meetings",
+    "description": "Record a whole meeting (your microphone plus the computer audio) and get a live transcript separated by speaker.",
+    "start": "Start recording",
+    "stop": "Stop and save",
+    "finishing": "Finishing the transcript…",
+    "recording": "Recording",
+    "backend": "Engine: {{backend}}",
+    "behind": "Transcript is {{seconds}} s behind",
+    "waiting": "Listening… the transcript appears after a few seconds of speech.",
+    "speaker": "Speaker {{n}}",
+    "unknownSpeaker": "Speaker ?",
+    "detection": {
+      "label": "Detect Teams meetings",
+      "description": "When Microsoft Teams starts using the microphone, offer to record the meeting. Recordings started this way stop and save automatically when the call ends."
+    },
+    "models": {
+      "title": "Meeting models required",
+      "description": "Meeting mode uses NVIDIA Nemotron 3.5 (transcription) and Nemotron 3 Diarization (speakers). About 850 MB, downloaded once.",
+      "download": "Download models",
+      "downloading": "Downloading… {{percent}}%"
+    },
+    "list": {
+      "title": "Saved meetings",
+      "empty": "No meetings yet.",
+      "speakers": "{{count}} speakers"
+    },
+    "detail": {
+      "back": "Back",
+      "rename": "Rename",
+      "renameSpeakerHint": "Click a speaker name to rename them.",
+      "renameSpeakerPrompt": "Name for {{speaker}}",
+      "copy": "Copy",
+      "copied": "Copied",
+      "save": "Save .md",
+      "saved": "Saved to {{path}}",
+      "delete": "Delete",
+      "confirmDelete": "Delete this meeting and its recording?"
+    },
+    "prompt": {
+      "askTitle": "Teams meeting detected",
+      "askBody": "Record and transcribe it with speakers?",
+      "record": "Record",
+      "notNow": "Not now",
+      "savedTitle": "Meeting saved",
+      "savedBody": "The transcript is in Handy → Meetings.",
+      "ok": "OK"
+    },
+    "errors": {
+      "modelsMissing": "Download the meeting models first (Handy → Meetings)."
+    }
   }
 }

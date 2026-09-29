@@ -512,6 +512,29 @@ jobs:
           chmod +x "$tools_dir/linuxdeploy-${arch}.AppImage"
           "$tools_dir/linuxdeploy-${arch}.AppImage" --appimage-extract-and-run --version
 
+      # Meeting mode runs NeMo-Speech (ASR + Nemotron-3-Diarization) in a
+      # separate worker process whose ggml DLLs must not collide with
+      # transcribe-cpp's, so it ships in its own resources/nemo folder together
+      # with the app-local VC++ runtime it links against.
+      - name: Stage meeting worker (Windows x64)
+        if: contains(inputs.platform, 'windows') && !contains(inputs.target, 'aarch64')
+        shell: pwsh
+        run: |
+          $dest = "src-tauri/resources/nemo"
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          $zip = Join-Path $env:RUNNER_TEMP "nemo-runtime.zip"
+          Invoke-WebRequest -Uri "https://github.com/Spadilla96/NeMo-Speech.cpp/releases/download/runtime-v1/nemo-runtime-windows-vulkan.zip" -OutFile $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne "7712111dfa56642d8035c1fa289fd5a7f65832e8e965103556f5ce2575af3766") { throw "NeMo runtime checksum mismatch: $hash" }
+          $unpacked = Join-Path $env:RUNNER_TEMP "nemo-runtime"
+          Expand-Archive $zip -DestinationPath $unpacked -Force
+          Copy-Item (Join-Path $unpacked "nemo/*") $dest -Force
+          cargo build --release --manifest-path meeting-worker/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { throw "meeting worker build failed" }
+          Copy-Item meeting-worker/target/release/handy-meeting-worker.exe $dest -Force
+          Get-ChildItem src-tauri/transcribe-libs -Include "vcruntime140*.dll","msvcp140*.dll" -Recurse | Copy-Item -Destination $dest -Force
+          Get-ChildItem $dest | Select-Object Name, Length
+
       - name: Build with Tauri
         uses: tauri-apps/tauri-action@v0
         env:

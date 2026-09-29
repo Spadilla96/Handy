@@ -45,3 +45,6 @@ result
 
 # Python bytecode (scripts/)
 __pycache__/
+
+# Meeting worker + NeMo runtime, staged by CI
+src-tauri/resources/nemo/

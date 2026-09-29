@@ -16,7 +16,8 @@
     "postProcessing": "Post proceso",
     "history": "Historial",
     "debug": "Depuración",
-    "about": "Acerca de"
+    "about": "Acerca de",
+    "meetings": "Reuniones"
   },
   "onboarding": {
     "subtitle": "Para comenzar, elige un modelo de transcripción",
@@ -725,5 +726,57 @@
     "learnMore": "Cómo solucionarlo",
     "recorderBlocked": "Ahora mismo no se pueden grabar atajos: Secure Input de macOS está bloqueando los eventos de teclado. Resuelve primero el aviso de Secure Input.",
     "dismiss": "Descartar"
+  },
+  "meetings": {
+    "title": "Reuniones",
+    "description": "Graba una reunión completa (tu micrófono y el audio del equipo) y obtén la transcripción en vivo separada por hablante.",
+    "start": "Iniciar grabación",
+    "stop": "Detener y guardar",
+    "finishing": "Terminando la transcripción…",
+    "recording": "Grabando",
+    "backend": "Motor: {{backend}}",
+    "behind": "La transcripción va {{seconds}} s por detrás",
+    "waiting": "Escuchando… la transcripción aparece tras unos segundos de conversación.",
+    "speaker": "Hablante {{n}}",
+    "unknownSpeaker": "Hablante ?",
+    "detection": {
+      "label": "Detectar reuniones de Teams",
+      "description": "Cuando Microsoft Teams empiece a usar el micrófono, te ofrece grabar la reunión. Las grabaciones iniciadas así se detienen y guardan solas al terminar la llamada."
+    },
+    "models": {
+      "title": "Se necesitan los modelos de reuniones",
+      "description": "El modo reunión usa NVIDIA Nemotron 3.5 (transcripción) y Nemotron 3 Diarization (hablantes). Unos 850 MB, se descargan una sola vez.",
+      "download": "Descargar modelos",
+      "downloading": "Descargando… {{percent}}%"
+    },
+    "list": {
+      "title": "Reuniones guardadas",
+      "empty": "Todavía no hay reuniones.",
+      "speakers": "{{count}} hablantes"
+    },
+    "detail": {
+      "back": "Volver",
+      "rename": "Renombrar",
+      "renameSpeakerHint": "Haz clic en el nombre de un hablante para renombrarlo.",
+      "renameSpeakerPrompt": "Nombre para {{speaker}}",
+      "copy": "Copiar",
+      "copied": "Copiado",
+      "save": "Guardar .md",
+      "saved": "Guardado en {{path}}",
+      "delete": "Eliminar",
+      "confirmDelete": "¿Eliminar esta reunión y su grabación?"
+    },
+    "prompt": {
+      "askTitle": "Reunión de Teams detectada",
+      "askBody": "¿Grabarla y transcribirla con hablantes?",
+      "record": "Grabar",
+      "notNow": "Ahora no",
+      "savedTitle": "Reunión guardada",
+      "savedBody": "La transcripción está en Handy → Reuniones.",
+      "ok": "OK"
+    },
+    "errors": {
+      "modelsMissing": "Primero descarga los modelos de reuniones (Handy → Reuniones)."
+    }
   }
 }
