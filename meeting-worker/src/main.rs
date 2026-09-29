@@ -39,6 +39,8 @@ struct Args {
     asr_model: PathBuf,
     diar_model: PathBuf,
     gpu: i32,
+    asr_gpu: Option<i32>,
+    endpoint_ms: i32,
     wav: Option<PathBuf>,
     realtime: bool,
 }
@@ -47,6 +49,8 @@ fn parse_args() -> Result<Args> {
     let mut asr_model = None;
     let mut diar_model = None;
     let mut gpu = 0;
+    let mut asr_gpu = None;
+    let mut endpoint_ms = 800;
     let mut wav = None;
     let mut realtime = false;
     let mut it = std::env::args().skip(1);
@@ -61,6 +65,20 @@ fn parse_args() -> Result<Args> {
                     Some(other) => bail!("unknown backend {other}"),
                 }
             }
+            "--asr-backend" => {
+                asr_gpu = Some(match it.next().as_deref() {
+                    Some("cpu") => -1,
+                    Some("vulkan") => 0,
+                    other => bail!("unknown ASR backend {other:?}"),
+                })
+            }
+            "--endpoint-ms" => {
+                endpoint_ms = it
+                    .next()
+                    .context("--endpoint-ms needs a value")?
+                    .parse()
+                    .context("--endpoint-ms must be an integer")?
+            }
             "--wav" => wav = it.next().map(PathBuf::from),
             "--realtime" => realtime = true,
             other => bail!("unknown argument {other}"),
@@ -70,6 +88,8 @@ fn parse_args() -> Result<Args> {
         asr_model: asr_model.context("--asr-model is required")?,
         diar_model: diar_model.context("--diar-model is required")?,
         gpu,
+        asr_gpu,
+        endpoint_ms,
         wav,
         realtime,
     })
@@ -129,7 +149,9 @@ fn run() -> Result<()> {
             s.spawn(move || {
                 let created = {
                     let _guard = init_lock.lock().unwrap();
-                    create_with_fallback(args.gpu, |g| Recognizer::new(nemo, &args.asr_model, g))
+                    create_with_fallback(args.asr_gpu.unwrap_or(args.gpu), |g| {
+                        Recognizer::new(nemo, &args.asr_model, g, args.endpoint_ms)
+                    })
                 };
                 let (mut rec, gpu) = match created {
                     Ok(v) => v,

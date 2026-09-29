@@ -57,6 +57,14 @@ pub struct ModelConfig {
 }
 
 #[repr(C)]
+pub struct EndpointingConfig {
+    pub size: usize,
+    pub enable: bool,
+    pub vad_based: bool,
+    pub stop_history_eou_ms: i32,
+}
+
+#[repr(C)]
 pub struct RecognizerConfig {
     pub size: usize,
     pub backend: *const BackendConfig,
@@ -328,8 +336,16 @@ pub struct Recognizer<'a> {
 }
 
 impl<'a> Recognizer<'a> {
-    pub fn new(nemo: &'a Nemo, model_path: &Path, gpu: i32) -> Result<Self> {
+    /// `endpoint_ms` > 0 enables silence endpointing so finalized words arrive
+    /// during the stream instead of only at `finish`.
+    pub fn new(nemo: &'a Nemo, model_path: &Path, gpu: i32, endpoint_ms: i32) -> Result<Self> {
         let path = cstring(model_path)?;
+        let endpointing = EndpointingConfig {
+            size: std::mem::size_of::<EndpointingConfig>(),
+            enable: endpoint_ms > 0,
+            vad_based: false,
+            stop_history_eou_ms: endpoint_ms.max(0),
+        };
         let backend = BackendConfig {
             size: std::mem::size_of::<BackendConfig>(),
             gpu,
@@ -346,7 +362,7 @@ impl<'a> Recognizer<'a> {
             streaming: ptr::null(),
             decoder: ptr::null(),
             vad: ptr::null(),
-            endpointing: ptr::null(),
+            endpointing: &endpointing as *const EndpointingConfig as *const c_void,
             postproc: ptr::null(),
             diar: ptr::null(),
             batching: ptr::null(),
