@@ -1,0 +1,21 @@
+[package]
+name = "handy-meeting-worker"
+version = "0.1.0"
+edition = "2021"
+description = "Out-of-process live transcription + speaker diarization for Handy's meeting mode (NeMo-Speech.cpp C API)"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "handy-meeting-worker"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+hound = "3.5.1"
+libloading = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
