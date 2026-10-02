@@ -702,6 +702,7 @@ mod tests {
     fn inputs(busy: bool) -> MenuInputs {
         MenuInputs {
             busy,
+            overlay_minimized: false,
             warning: false,
             model_loaded: true,
             selected_model: "small".to_string(),
