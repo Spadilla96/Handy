@@ -480,7 +480,12 @@
       "retranscribe": "Re-transcribe",
       "retranscribeError": "Failed to re-transcribe. Please try again.",
       "transcribing": "Transcribing...",
-      "transcriptionFailed": "Transcription failed. You can re-transcribe using the retry icon."
+      "transcriptionFailed": "Transcription failed. You can re-transcribe using the retry icon.",
+      "markMeeting": "Process as a meeting (separate speakers)",
+      "viewMeeting": "View meeting",
+      "meetingProcessing": "Processing as a meeting… {{percent}}%. Click to cancel.",
+      "meetingBusy": "Another recording is being processed as a meeting",
+      "meetingDownloadConfirm": "Processing meetings needs two models (about 850 MB, downloaded once). Download them now?"
     },
     "debug": {
       "title": "Debug",
@@ -729,23 +734,12 @@
   },
   "meetings": {
     "title": "Meetings",
-    "description": "Record a whole meeting (your microphone plus the computer audio) and get a live transcript separated by speaker.",
-    "start": "Start recording",
-    "stop": "Stop and save",
-    "finishing": "Finishing the transcript…",
-    "recording": "Recording",
-    "backend": "Engine: {{backend}}",
-    "behind": "Transcript is {{seconds}} s behind",
-    "waiting": "Listening… the transcript appears after a few seconds of speech.",
+    "description": "Meetings are recordings from your History turned into a transcript separated by speaker. They are kept until you delete them.",
     "speaker": "Speaker {{n}}",
     "unknownSpeaker": "Speaker ?",
-    "detection": {
-      "label": "Detect Teams meetings",
-      "description": "When Microsoft Teams starts using the microphone, offer to record the meeting. Recordings started this way stop and save automatically when the call ends."
-    },
     "models": {
       "title": "Meeting models required",
-      "description": "Meeting mode uses NVIDIA Nemotron 3.5 (transcription) and Nemotron 3 Diarization (speakers). About 850 MB, downloaded once.",
+      "description": "Meetings use NVIDIA Nemotron 3.5 (transcription) and Nemotron 3 Diarization (speakers). About 850 MB, downloaded once.",
       "download": "Download models",
       "downloading": "Downloading… {{percent}}%"
     },
@@ -766,17 +760,16 @@
       "delete": "Delete",
       "confirmDelete": "Delete this meeting and its recording?"
     },
-    "prompt": {
-      "askTitle": "Teams meeting detected",
-      "askBody": "Record and transcribe it with speakers?",
-      "record": "Record",
-      "notNow": "Not now",
-      "savedTitle": "Meeting saved",
-      "savedBody": "The transcript is in Handy → Meetings.",
-      "ok": "OK"
-    },
     "errors": {
       "modelsMissing": "Download the meeting models first (Handy → Meetings)."
+    },
+    "howTo": "Record as usual (tip: set the audio source to Microphone + system for calls). Then, in History, click the people icon on that recording to process it as a meeting.",
+    "diarize": {
+      "running": "Processing a meeting… {{percent}}%",
+      "cancel": "Cancel",
+      "done": "Meeting ready",
+      "view": "View",
+      "failed": "Could not process the meeting: {{error}}"
     }
   }
 }

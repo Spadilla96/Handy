@@ -480,7 +480,12 @@
       "retranscribe": "Re-transcribir",
       "retranscribeError": "No se pudo re-transcribir. Por favor, inténtalo de nuevo.",
       "transcribing": "Transcribiendo...",
-      "transcriptionFailed": "La transcripción falló. Puedes re-transcribir usando el icono de reintentar."
+      "transcriptionFailed": "La transcripción falló. Puedes re-transcribir usando el icono de reintentar.",
+      "markMeeting": "Procesar como reunión (separar hablantes)",
+      "viewMeeting": "Ver reunión",
+      "meetingProcessing": "Procesando como reunión… {{percent}}%. Haz clic para cancelar.",
+      "meetingBusy": "Ya se está procesando otra grabación como reunión",
+      "meetingDownloadConfirm": "Para procesar reuniones se necesitan dos modelos (unos 850 MB, se descargan una sola vez). ¿Descargarlos ahora?"
     },
     "debug": {
       "title": "Depuración",
@@ -729,23 +734,12 @@
   },
   "meetings": {
     "title": "Reuniones",
-    "description": "Graba una reunión completa (tu micrófono y el audio del equipo) y obtén la transcripción en vivo separada por hablante.",
-    "start": "Iniciar grabación",
-    "stop": "Detener y guardar",
-    "finishing": "Terminando la transcripción…",
-    "recording": "Grabando",
-    "backend": "Motor: {{backend}}",
-    "behind": "La transcripción va {{seconds}} s por detrás",
-    "waiting": "Escuchando… la transcripción aparece tras unos segundos de conversación.",
+    "description": "Las reuniones son grabaciones del Historial convertidas en una transcripción separada por hablante. Se conservan hasta que las elimines.",
     "speaker": "Hablante {{n}}",
     "unknownSpeaker": "Hablante ?",
-    "detection": {
-      "label": "Detectar reuniones de Teams",
-      "description": "Cuando Microsoft Teams empiece a usar el micrófono, te ofrece grabar la reunión. Las grabaciones iniciadas así se detienen y guardan solas al terminar la llamada."
-    },
     "models": {
       "title": "Se necesitan los modelos de reuniones",
-      "description": "El modo reunión usa NVIDIA Nemotron 3.5 (transcripción) y Nemotron 3 Diarization (hablantes). Unos 850 MB, se descargan una sola vez.",
+      "description": "Las reuniones usan NVIDIA Nemotron 3.5 (transcripción) y Nemotron 3 Diarization (hablantes). Unos 850 MB, se descargan una sola vez.",
       "download": "Descargar modelos",
       "downloading": "Descargando… {{percent}}%"
     },
@@ -766,17 +760,16 @@
       "delete": "Eliminar",
       "confirmDelete": "¿Eliminar esta reunión y su grabación?"
     },
-    "prompt": {
-      "askTitle": "Reunión de Teams detectada",
-      "askBody": "¿Grabarla y transcribirla con hablantes?",
-      "record": "Grabar",
-      "notNow": "Ahora no",
-      "savedTitle": "Reunión guardada",
-      "savedBody": "La transcripción está en Handy → Reuniones.",
-      "ok": "OK"
-    },
     "errors": {
       "modelsMissing": "Primero descarga los modelos de reuniones (Handy → Reuniones)."
+    },
+    "howTo": "Graba como siempre (consejo: para llamadas usa la fuente de audio Micrófono + sistema). Luego, en el Historial, haz clic en el icono de personas de esa grabación para procesarla como reunión.",
+    "diarize": {
+      "running": "Procesando una reunión… {{percent}}%",
+      "cancel": "Cancelar",
+      "done": "Reunión lista",
+      "view": "Ver",
+      "failed": "No se pudo procesar la reunión: {{error}}"
     }
   }
 }

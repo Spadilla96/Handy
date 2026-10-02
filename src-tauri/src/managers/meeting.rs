@@ -1,17 +1,18 @@
-//! Meeting mode: records microphone + system audio for a whole meeting and
-//! streams it to `handy-meeting-worker` (a separate process running NeMo's
-//! streaming ASR and Nemotron-3-Diarization), turning its JSONL output into a
-//! live, speaker-attributed transcript that is saved when the meeting ends.
+//! Meetings: turn a finished dictation recording into a speaker-attributed
+//! transcript. The recording's WAV is handed to `handy-meeting-worker` (a
+//! separate process running NeMo's ASR and Nemotron-3-Diarization), and the
+//! result is kept in `meetings.db` with its own copy of the audio, outside the
+//! dictation history's retention limits.
 //!
 //! The worker is out of process on purpose: NeMo ships its own `ggml*.dll`
 //! builds, which would collide with the ones transcribe-cpp already loaded
 //! into Handy.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
@@ -22,28 +23,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::managers::audio::AudioRecordingManager;
-use crate::managers::history::HistoryManager;
-
-const SAMPLE_RATE: u32 = 16_000;
-/// How long `stop` waits for the worker to finish transcribing the backlog.
-const FINAL_TIMEOUT: Duration = Duration::from_secs(20 * 60);
-
-// ---- Audio tap --------------------------------------------------------------
-
-/// Where the recorder's 16 kHz frames go while a meeting is active. Fed from
-/// the recorder's consumer thread (not the real-time audio callback), so a
-/// short uncontended lock is fine.
-static AUDIO_SINK: Mutex<Option<mpsc::Sender<Vec<f32>>>> = Mutex::new(None);
-
-/// Called for every captured frame; a no-op unless a meeting is recording.
-pub fn feed_meeting_audio(frame: &[f32]) {
-    if let Ok(guard) = AUDIO_SINK.lock() {
-        if let Some(tx) = guard.as_ref() {
-            let _ = tx.send(frame.to_vec());
-        }
-    }
-}
+use crate::managers::history::{HistoryEntry, HistoryManager};
 
 // ---- Models -----------------------------------------------------------------
 
@@ -89,30 +69,6 @@ pub struct Utterance {
 }
 
 #[derive(Clone, Debug, Serialize, Type)]
-pub struct MeetingStatus {
-    pub active: bool,
-    /// Recording has stopped and the worker is finishing the transcript.
-    pub finishing: bool,
-    pub started_at: Option<i64>,
-    pub auto_started: bool,
-    pub committed: Vec<Utterance>,
-    pub tail: Vec<Utterance>,
-    /// Seconds of audio captured / transcribed so far.
-    pub audio_s: f64,
-    pub transcribed_s: f64,
-    pub backend: Option<String>,
-}
-
-/// Incremental live update sent as the `meeting-transcript` event.
-#[derive(Clone, Debug, Serialize, Type)]
-pub struct MeetingTranscriptEvent {
-    pub committed: Vec<Utterance>,
-    pub tail: Vec<Utterance>,
-    pub audio_s: f64,
-    pub transcribed_s: f64,
-}
-
-#[derive(Clone, Debug, Serialize, Type)]
 pub struct MeetingSummary {
     pub id: i64,
     pub started_at: i64,
@@ -120,6 +76,8 @@ pub struct MeetingSummary {
     pub title: String,
     pub speaker_count: u32,
     pub preview: String,
+    /// History entry this meeting was created from, if any.
+    pub source_history_id: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize, Type)]
@@ -134,35 +92,43 @@ pub struct Meeting {
     pub speaker_names: HashMap<String, String>,
 }
 
-// ---- Live session -------------------------------------------------------------
+// ---- Diarization job ------------------------------------------------------------
 
-struct Live {
-    started_at: i64,
-    started_instant: Instant,
-    auto_started: bool,
-    file_name: String,
-    committed: Vec<Utterance>,
-    tail: Vec<Utterance>,
-    audio_s: f64,
-    transcribed_s: f64,
-    backend: Option<String>,
-    finishing: bool,
+/// The diarization currently running, also sent as `meeting-diarize-progress`.
+#[derive(Clone, Debug, Serialize, Type)]
+pub struct DiarizationJob {
+    pub history_id: i64,
+    /// 0.0..=1.0 of the recording processed.
+    pub progress: f64,
+    pub backend: Option<String>,
 }
 
-struct Session {
-    live: Arc<Mutex<Live>>,
-    child: Child,
-    final_rx: mpsc::Receiver<Option<Vec<Utterance>>>,
-    writer: std::thread::JoinHandle<()>,
+/// Sent as `meeting-saved` when a diarization finishes.
+#[derive(Clone, Debug, Serialize, Type)]
+pub struct MeetingSavedEvent {
+    pub history_id: i64,
+    pub meeting_id: i64,
+}
+
+/// Sent as `meeting-diarize-failed` when a diarization errors or is cancelled.
+#[derive(Clone, Debug, Serialize, Type)]
+pub struct DiarizeFailedEvent {
+    pub history_id: i64,
+    pub message: String,
+    pub cancelled: bool,
+}
+
+struct RunningJob {
+    info: DiarizationJob,
+    child: Arc<Mutex<Child>>,
+    cancelled: bool,
 }
 
 pub struct MeetingManager {
     app: AppHandle,
     db_path: PathBuf,
     models_dir: PathBuf,
-    session: Mutex<Option<Session>>,
-    /// Snapshot of the live transcript, readable while `session` is busy.
-    live: Mutex<Option<Arc<Mutex<Live>>>>,
+    job: Mutex<Option<RunningJob>>,
     downloading: Mutex<bool>,
     download_progress: Mutex<(u64, u64)>,
 }
@@ -176,8 +142,7 @@ impl MeetingManager {
             app: app.clone(),
             db_path: data_dir.join("meetings.db"),
             models_dir,
-            session: Mutex::new(None),
-            live: Mutex::new(None),
+            job: Mutex::new(None),
             downloading: Mutex::new(false),
             download_progress: Mutex::new((0, 0)),
         };
@@ -192,7 +157,8 @@ impl MeetingManager {
     }
 
     fn init_db(&self) -> Result<()> {
-        self.conn()?.execute_batch(
+        let conn = self.conn()?;
+        conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS meetings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 started_at INTEGER NOT NULL,
@@ -203,13 +169,19 @@ impl MeetingManager {
                 speaker_names_json TEXT NOT NULL DEFAULT '{}'
             );",
         )?;
+        let has_source: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('meetings') WHERE name = 'source_history_id'")?
+            .exists([])?;
+        if !has_source {
+            conn.execute_batch("ALTER TABLE meetings ADD COLUMN source_history_id INTEGER;")?;
+        }
         Ok(())
     }
 
     pub fn list(&self) -> Result<Vec<MeetingSummary>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, started_at, ended_at, title, utterances_json FROM meetings ORDER BY started_at DESC",
+            "SELECT id, started_at, ended_at, title, utterances_json, source_history_id FROM meetings ORDER BY started_at DESC",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok((
@@ -218,11 +190,12 @@ impl MeetingManager {
                 r.get::<_, i64>(2)?,
                 r.get::<_, String>(3)?,
                 r.get::<_, String>(4)?,
+                r.get::<_, Option<i64>>(5)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (id, started_at, ended_at, title, json) = row?;
+            let (id, started_at, ended_at, title, json, source_history_id) = row?;
             let utterances: Vec<Utterance> = serde_json::from_str(&json).unwrap_or_default();
             let mut speakers: Vec<i32> = utterances.iter().map(|u| u.speaker).collect();
             speakers.sort_unstable();
@@ -242,6 +215,7 @@ impl MeetingManager {
                 title,
                 speaker_count: speakers.len() as u32,
                 preview,
+                source_history_id,
             });
         }
         Ok(out)
@@ -441,54 +415,7 @@ impl MeetingManager {
         Ok(())
     }
 
-    // ---- live session -------------------------------------------------------
-
-    pub fn is_active(&self) -> bool {
-        self.live.lock().unwrap().is_some()
-    }
-
-    pub fn is_auto_started(&self) -> bool {
-        self.live
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|l| l.lock().unwrap().auto_started)
-            .unwrap_or(false)
-    }
-
-    pub fn status(&self) -> MeetingStatus {
-        match self.live.lock().unwrap().as_ref() {
-            Some(live) => {
-                let l = live.lock().unwrap();
-                MeetingStatus {
-                    active: true,
-                    finishing: l.finishing,
-                    started_at: Some(l.started_at),
-                    auto_started: l.auto_started,
-                    committed: l.committed.clone(),
-                    tail: l.tail.clone(),
-                    audio_s: l.audio_s,
-                    transcribed_s: l.transcribed_s,
-                    backend: l.backend.clone(),
-                }
-            }
-            None => MeetingStatus {
-                active: false,
-                finishing: false,
-                started_at: None,
-                auto_started: false,
-                committed: Vec::new(),
-                tail: Vec::new(),
-                audio_s: 0.0,
-                transcribed_s: 0.0,
-                backend: None,
-            },
-        }
-    }
-
-    fn emit_state(&self) {
-        let _ = self.app.emit("meeting-state", self.status());
-    }
+    // ---- diarization ----------------------------------------------------------
 
     fn worker_path(&self) -> Result<PathBuf> {
         let path = self.app.path().resolve(
@@ -501,20 +428,40 @@ impl MeetingManager {
         Ok(path)
     }
 
-    /// Start recording a meeting. `auto_started` marks sessions begun from the
-    /// Teams detector, which may also stop them automatically.
-    pub fn start(&self, auto_started: bool) -> Result<()> {
-        let mut session_guard = self.session.lock().unwrap();
-        if session_guard.is_some() {
-            bail!("A meeting is already being recorded");
+    pub fn current_job(&self) -> Option<DiarizationJob> {
+        self.job.lock().unwrap().as_ref().map(|j| j.info.clone())
+    }
+
+    /// Start turning a history entry's recording into a meeting. Returns once
+    /// the worker is running; progress, completion and failure arrive as the
+    /// `meeting-diarize-progress`, `meeting-saved` and `meeting-diarize-failed`
+    /// events.
+    pub fn start_diarization(self: &Arc<Self>, entry: HistoryEntry) -> Result<()> {
+        let mut job_guard = self.job.lock().unwrap();
+        if job_guard.is_some() {
+            bail!("Another recording is already being processed as a meeting");
         }
         if !MODELS.iter().all(|m| self.model_ready(m)) {
             bail!("models-missing");
         }
         let worker = self.worker_path()?;
-        let started_at = chrono::Utc::now().timestamp();
-        let file_name = format!("meeting-{started_at}.wav");
-        let wav_path = self.recordings_dir().join(&file_name);
+        let recordings = self.recordings_dir();
+        let source = recordings.join(&entry.file_name);
+        if !source.exists() {
+            bail!("The recording for this entry no longer exists");
+        }
+        let duration = wav_duration_secs(&source)?;
+
+        // The meeting owns a copy of the audio so pruning the dictation
+        // history can never take it away.
+        let file_name = format!(
+            "meeting-{}-{}.wav",
+            entry.timestamp,
+            chrono::Utc::now().timestamp()
+        );
+        let wav_path = recordings.join(&file_name);
+        std::fs::copy(&source, &wav_path)
+            .with_context(|| format!("copying {}", source.display()))?;
 
         let mut cmd = Command::new(&worker);
         cmd.arg("--asr-model")
@@ -523,7 +470,11 @@ impl MeetingManager {
             .arg(self.model_path(&DIAR_MODEL))
             .arg("--backend")
             .arg("vulkan")
-            .stdin(Stdio::piped())
+            .arg("--diar-preset")
+            .arg("offline")
+            .arg("--wav")
+            .arg(&wav_path)
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         #[cfg(target_os = "windows")]
@@ -532,23 +483,33 @@ impl MeetingManager {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
-        let mut child = cmd.spawn().context("starting the meeting worker")?;
-        let stdin = child.stdin.take().context("worker stdin")?;
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = std::fs::remove_file(&wav_path);
+                return Err(e).context("starting the meeting worker");
+            }
+        };
         let stdout = child.stdout.take().context("worker stdout")?;
         let stderr = child.stderr.take().context("worker stderr")?;
+        let child = Arc::new(Mutex::new(child));
 
-        let live = Arc::new(Mutex::new(Live {
-            started_at,
-            started_instant: Instant::now(),
-            auto_started,
-            file_name: file_name.clone(),
-            committed: Vec::new(),
-            tail: Vec::new(),
-            audio_s: 0.0,
-            transcribed_s: 0.0,
+        let info = DiarizationJob {
+            history_id: entry.id,
+            progress: 0.0,
             backend: None,
-            finishing: false,
-        }));
+        };
+        *job_guard = Some(RunningJob {
+            info: info.clone(),
+            child: child.clone(),
+            cancelled: false,
+        });
+        drop(job_guard);
+        let _ = self.app.emit("meeting-diarize-progress", info);
+        info!(
+            "Diarizing history entry #{} ({duration:.0}s) -> {file_name}",
+            entry.id
+        );
 
         // Worker diagnostics go to Handy's log.
         std::thread::spawn(move || {
@@ -557,80 +518,131 @@ impl MeetingManager {
             }
         });
 
-        // Worker events -> live state + frontend events.
-        let (final_tx, final_rx) = mpsc::channel();
-        {
-            let (live, app) = (live.clone(), self.app.clone());
-            std::thread::spawn(move || read_worker_output(stdout, live, app, final_tx));
-        }
-
-        // Captured audio -> WAV file + worker stdin.
-        let (audio_tx, audio_rx) = mpsc::channel::<Vec<f32>>();
-        let writer = {
-            let live = live.clone();
-            std::thread::spawn(move || {
-                if let Err(e) = write_audio(audio_rx, stdin, &wav_path, &live) {
-                    error!("Meeting audio writer failed: {e:#}");
+        let manager = self.clone();
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let outcome = manager.read_worker_output(stdout, duration);
+            {
+                let mut child = child.lock().unwrap();
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            let cancelled = manager
+                .job
+                .lock()
+                .unwrap()
+                .take()
+                .map(|j| j.cancelled)
+                .unwrap_or(false);
+            let result = match (cancelled, outcome) {
+                (true, _) => Err(anyhow::anyhow!("cancelled")),
+                (false, Ok(utterances)) => {
+                    manager.save_meeting(&entry, &file_name, duration, utterances)
                 }
-            })
-        };
-        *AUDIO_SINK.lock().unwrap() = Some(audio_tx);
-
-        let rm = self.app.state::<Arc<AudioRecordingManager>>();
-        if let Err(e) = rm.try_start_meeting() {
-            *AUDIO_SINK.lock().unwrap() = None;
-            let _ = child.kill();
-            let _ = writer.join();
-            bail!("{e}");
-        }
-
-        *self.live.lock().unwrap() = Some(live.clone());
-        *session_guard = Some(Session {
-            live,
-            child,
-            final_rx,
-            writer,
+                (false, Err(e)) => Err(e),
+            };
+            match result {
+                Ok(meeting_id) => {
+                    info!(
+                        "Meeting #{meeting_id} saved from history entry #{} in {:.0}s",
+                        entry.id,
+                        started.elapsed().as_secs_f64()
+                    );
+                    let _ = manager.app.emit(
+                        "meeting-saved",
+                        MeetingSavedEvent {
+                            history_id: entry.id,
+                            meeting_id,
+                        },
+                    );
+                }
+                Err(e) => {
+                    if cancelled {
+                        info!("Diarization of history entry #{} cancelled", entry.id);
+                    } else {
+                        error!("Diarization of history entry #{} failed: {e:#}", entry.id);
+                    }
+                    let _ = std::fs::remove_file(&wav_path);
+                    let _ = manager.app.emit(
+                        "meeting-diarize-failed",
+                        DiarizeFailedEvent {
+                            history_id: entry.id,
+                            message: format!("{e:#}"),
+                            cancelled,
+                        },
+                    );
+                }
+            }
         });
-        drop(session_guard);
-        info!("Meeting recording started (auto={auto_started}) -> {file_name}");
-        self.emit_state();
         Ok(())
     }
 
-    /// Stop recording, wait for the worker to finish the transcript, save it
-    /// and return the new meeting id. Blocks; call from a worker thread.
-    pub fn stop(&self) -> Result<i64> {
-        let Some(mut session) = self.session.lock().unwrap().take() else {
-            bail!("No meeting is being recorded");
-        };
-        let rm = self.app.state::<Arc<AudioRecordingManager>>();
-        rm.stop_meeting();
-        // Dropping the sender ends the writer thread, which closes the
-        // worker's stdin; the worker then flushes and emits its final result.
-        *AUDIO_SINK.lock().unwrap() = None;
-        let _ = session.writer.join();
-        session.live.lock().unwrap().finishing = true;
-        self.emit_state();
+    /// Stop the running diarization, if any. The job's own thread cleans up.
+    pub fn cancel_diarization(&self) {
+        if let Some(job) = self.job.lock().unwrap().as_mut() {
+            job.cancelled = true;
+            let _ = job.child.lock().unwrap().kill();
+        }
+    }
 
-        let final_utterances = match session.final_rx.recv_timeout(FINAL_TIMEOUT) {
-            Ok(Some(u)) => u,
-            Ok(None) | Err(_) => {
-                warn!("Meeting worker ended without a final transcript; saving the live one");
-                let l = session.live.lock().unwrap();
-                l.committed.iter().chain(l.tail.iter()).cloned().collect()
+    /// Follow the worker's JSONL until it exits, forwarding progress, and
+    /// return its final utterances.
+    fn read_worker_output(
+        &self,
+        stdout: std::process::ChildStdout,
+        duration: f64,
+    ) -> Result<Vec<Utterance>> {
+        let mut last_error = None;
+        for line in BufReader::new(stdout).lines().map_while(|l| l.ok()) {
+            let event: WorkerEvent = match serde_json::from_str(&line) {
+                Ok(e) => e,
+                Err(e) => {
+                    debug!("Ignoring worker line ({e}): {line}");
+                    continue;
+                }
+            };
+            match event {
+                WorkerEvent::Ready { backend } => {
+                    info!("Meeting worker ready on {backend}");
+                    self.update_job(|j| j.backend = Some(backend));
+                }
+                WorkerEvent::Update { asr_s, diar_s } => {
+                    let progress = if duration > 0.0 {
+                        (asr_s.min(diar_s) / duration).clamp(0.0, 0.99)
+                    } else {
+                        0.0
+                    };
+                    self.update_job(|j| j.progress = progress);
+                }
+                WorkerEvent::Final { utterances } => return Ok(utterances),
+                WorkerEvent::Warning { message } => warn!("Meeting worker: {message}"),
+                WorkerEvent::Error { message } => {
+                    error!("Meeting worker error: {message}");
+                    last_error = Some(message);
+                }
             }
-        };
-        let _ = session.child.kill();
-        let _ = session.child.wait();
+        }
+        bail!(last_error.unwrap_or_else(|| "the meeting worker exited unexpectedly".to_string()))
+    }
 
-        let (started_at, file_name, duration) = {
-            let l = session.live.lock().unwrap();
-            (
-                l.started_at,
-                l.file_name.clone(),
-                l.started_instant.elapsed().as_secs() as i64,
-            )
+    fn update_job(&self, f: impl FnOnce(&mut DiarizationJob)) {
+        let info = {
+            let mut guard = self.job.lock().unwrap();
+            let Some(job) = guard.as_mut() else { return };
+            f(&mut job.info);
+            job.info.clone()
         };
+        let _ = self.app.emit("meeting-diarize-progress", info);
+    }
+
+    fn save_meeting(
+        &self,
+        entry: &HistoryEntry,
+        file_name: &str,
+        duration: f64,
+        utterances: Vec<Utterance>,
+    ) -> Result<i64> {
+        let started_at = entry.timestamp;
         let title = chrono::DateTime::from_timestamp(started_at, 0)
             .map(|t| {
                 t.with_timezone(&chrono::Local)
@@ -638,7 +650,7 @@ impl MeetingManager {
                     .to_string()
             })
             .unwrap_or_else(|| "Reunión".to_string());
-        let utterances: Vec<Utterance> = final_utterances
+        let utterances: Vec<Utterance> = utterances
             .into_iter()
             .map(|mut u| {
                 u.provisional = false;
@@ -647,26 +659,25 @@ impl MeetingManager {
             .collect();
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO meetings (started_at, ended_at, title, file_name, utterances_json) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO meetings (started_at, ended_at, title, file_name, utterances_json, source_history_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 started_at,
-                started_at + duration,
+                started_at + duration.round() as i64,
                 title,
                 file_name,
-                serde_json::to_string(&utterances)?
+                serde_json::to_string(&utterances)?,
+                entry.id
             ],
         )?;
-        let id = conn.last_insert_rowid();
-        *self.live.lock().unwrap() = None;
-        info!(
-            "Meeting saved as #{id} ({} utterances, {}s)",
-            utterances.len(),
-            duration
-        );
-        self.emit_state();
-        let _ = self.app.emit("meeting-saved", id);
-        Ok(id)
+        Ok(conn.last_insert_rowid())
     }
+}
+
+fn wav_duration_secs(path: &Path) -> Result<f64> {
+    let reader =
+        hound::WavReader::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let spec = reader.spec();
+    Ok(reader.duration() as f64 / spec.sample_rate as f64)
 }
 
 fn speaker_label(names: &HashMap<String, String>, speaker: i32) -> String {
@@ -691,65 +702,19 @@ fn format_ts(secs: f64) -> String {
     }
 }
 
-/// Forward frames to the worker (length-prefixed f32 blocks) and append them
-/// to the meeting WAV. Ends, closing the worker's stdin, when the sender side
-/// is dropped by `stop`.
-fn write_audio(
-    rx: mpsc::Receiver<Vec<f32>>,
-    stdin: std::process::ChildStdin,
-    wav_path: &Path,
-    live: &Mutex<Live>,
-) -> Result<()> {
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate: SAMPLE_RATE,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
-    let mut wav = hound::WavWriter::create(wav_path, spec)
-        .with_context(|| format!("creating {}", wav_path.display()))?;
-    let mut out = BufWriter::new(stdin);
-    let mut worker_alive = true;
-    let mut samples_total = 0u64;
-    while let Ok(frame) = rx.recv() {
-        for &s in &frame {
-            wav.write_sample((s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)?;
-        }
-        samples_total += frame.len() as u64;
-        if worker_alive {
-            let mut block = Vec::with_capacity(4 + frame.len() * 4);
-            block.extend_from_slice(&(frame.len() as u32).to_le_bytes());
-            for s in &frame {
-                block.extend_from_slice(&s.to_le_bytes());
-            }
-            if out.write_all(&block).and_then(|_| out.flush()).is_err() {
-                // Keep saving the audio even if the worker died.
-                warn!("Meeting worker stopped accepting audio");
-                worker_alive = false;
-            }
-        }
-        live.lock().unwrap().audio_s = samples_total as f64 / SAMPLE_RATE as f64;
-    }
-    if worker_alive {
-        let _ = out.write_all(&0u32.to_le_bytes());
-        let _ = out.flush();
-    }
-    drop(out);
-    wav.finalize()?;
-    Ok(())
-}
-
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 enum WorkerEvent {
     Ready {
         backend: String,
     },
+    /// Live transcript updates are ignored here; only the progress counters
+    /// matter for a finished recording.
     Update {
-        committed: Vec<Utterance>,
-        tail: Vec<Utterance>,
         #[serde(default)]
         asr_s: f64,
+        #[serde(default)]
+        diar_s: f64,
     },
     Final {
         utterances: Vec<Utterance>,
@@ -760,62 +725,6 @@ enum WorkerEvent {
     Error {
         message: String,
     },
-}
-
-fn read_worker_output(
-    stdout: std::process::ChildStdout,
-    live: Arc<Mutex<Live>>,
-    app: AppHandle,
-    final_tx: mpsc::Sender<Option<Vec<Utterance>>>,
-) {
-    let mut got_final = false;
-    for line in BufReader::new(stdout).lines().map_while(|l| l.ok()) {
-        let event: WorkerEvent = match serde_json::from_str(&line) {
-            Ok(e) => e,
-            Err(e) => {
-                debug!("Ignoring worker line ({e}): {line}");
-                continue;
-            }
-        };
-        match event {
-            WorkerEvent::Ready { backend } => {
-                info!("Meeting worker ready on {backend}");
-                live.lock().unwrap().backend = Some(backend);
-                let _ = app.emit("meeting-state", ());
-            }
-            WorkerEvent::Update {
-                committed,
-                tail,
-                asr_s,
-            } => {
-                let event = {
-                    let mut l = live.lock().unwrap();
-                    l.committed.extend(committed.iter().cloned());
-                    l.tail = tail.clone();
-                    l.transcribed_s = asr_s;
-                    MeetingTranscriptEvent {
-                        committed,
-                        tail,
-                        audio_s: l.audio_s,
-                        transcribed_s: asr_s,
-                    }
-                };
-                let _ = app.emit("meeting-transcript", event);
-            }
-            WorkerEvent::Final { utterances } => {
-                got_final = true;
-                let _ = final_tx.send(Some(utterances));
-            }
-            WorkerEvent::Warning { message } => warn!("Meeting worker: {message}"),
-            WorkerEvent::Error { message } => {
-                error!("Meeting worker error: {message}");
-                let _ = app.emit("meeting-error", message);
-            }
-        }
-    }
-    if !got_final {
-        let _ = final_tx.send(None);
-    }
 }
 
 /// Convenience used by commands: an error message the UI can show.
@@ -834,15 +743,23 @@ mod tests {
         )
         .unwrap();
         match e {
-            WorkerEvent::Update { committed, asr_s, .. } => {
-                assert_eq!(committed[0].speaker, 2);
+            WorkerEvent::Update { asr_s, diar_s } => {
                 assert_eq!(asr_s, 2.5);
+                assert_eq!(diar_s, 2.9);
             }
             _ => panic!("expected update"),
         }
         let e: WorkerEvent =
             serde_json::from_str(r#"{"type":"ready","backend":"vulkan"}"#).unwrap();
         assert!(matches!(e, WorkerEvent::Ready { .. }));
+        let e: WorkerEvent = serde_json::from_str(
+            r#"{"type":"final","utterances":[{"speaker":1,"start":0.0,"end":1.0,"text":"hi"}],"audio_s":1.0}"#,
+        )
+        .unwrap();
+        match e {
+            WorkerEvent::Final { utterances } => assert_eq!(utterances[0].text, "hi"),
+            _ => panic!("expected final"),
+        }
     }
 
     #[test]

@@ -3,8 +3,10 @@
 //! share an address space with Handy's own.
 //!
 //! Input (stdin): repeated `[u32 LE n][n x f32 LE]` blocks of 16 kHz mono
-//! audio; `n = 0` or EOF ends the meeting. `--wav <file>` feeds a file instead
-//! (for testing), optionally paced with `--realtime`.
+//! audio; `n = 0` or EOF ends the meeting. `--wav <file>` feeds a recording
+//! instead (how Handy diarizes finished recordings), as fast as the models
+//! keep up unless paced with `--realtime`. `--diar-preset offline` selects the
+//! long-form diarization geometry, better suited to whole recordings.
 //!
 //! Output (stdout): one JSON object per line:
 //!   {"type":"ready","backend":"vulkan"|"cpu"}
@@ -34,6 +36,8 @@ const PROVISIONAL_WINDOW_SECS: f64 = 10.0;
 const UPDATE_INTERVAL: Duration = Duration::from_secs(1);
 /// Re-query diarization segments after this much new audio.
 const SEGMENT_REFRESH_SECS: f64 = 1.0;
+/// Audio blocks (100 ms from a file) each model thread may have queued.
+const AUDIO_QUEUE_BLOCKS: usize = 600;
 
 struct Args {
     asr_model: PathBuf,
@@ -43,6 +47,7 @@ struct Args {
     endpoint_ms: i32,
     wav: Option<PathBuf>,
     realtime: bool,
+    diar_preset: Option<String>,
 }
 
 fn parse_args() -> Result<Args> {
@@ -53,6 +58,7 @@ fn parse_args() -> Result<Args> {
     let mut endpoint_ms = 800;
     let mut wav = None;
     let mut realtime = false;
+    let mut diar_preset = None;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -81,6 +87,9 @@ fn parse_args() -> Result<Args> {
             }
             "--wav" => wav = it.next().map(PathBuf::from),
             "--realtime" => realtime = true,
+            "--diar-preset" => {
+                diar_preset = Some(it.next().context("--diar-preset needs a value")?)
+            }
             other => bail!("unknown argument {other}"),
         }
     }
@@ -92,6 +101,7 @@ fn parse_args() -> Result<Args> {
         endpoint_ms,
         wav,
         realtime,
+        diar_preset,
     })
 }
 
@@ -135,8 +145,10 @@ fn run() -> Result<()> {
     let nemo = Nemo::load(&dir.join("nemo_speech_asr_c.dll"))?;
 
     let shared = Mutex::new(Shared::default());
-    let (asr_tx, asr_rx) = mpsc::channel::<Msg>();
-    let (diar_tx, diar_rx) = mpsc::channel::<Msg>();
+    // Bounded so a file fed faster than real time waits for the models
+    // instead of queueing the whole recording in memory.
+    let (asr_tx, asr_rx) = mpsc::sync_channel::<Msg>(AUDIO_QUEUE_BLOCKS);
+    let (diar_tx, diar_rx) = mpsc::sync_channel::<Msg>(AUDIO_QUEUE_BLOCKS);
     let (ready_tx, ready_rx) = mpsc::channel::<Result<i32>>();
     // ggml-vulkan device setup is not safe to run from two threads at once.
     let init_lock = Mutex::new(());
@@ -175,7 +187,9 @@ fn run() -> Result<()> {
             s.spawn(move || {
                 let created = {
                     let _guard = init_lock.lock().unwrap();
-                    create_with_fallback(args.gpu, |g| Diarizer::new(nemo, &args.diar_model, g))
+                    create_with_fallback(args.gpu, |g| {
+                        Diarizer::new(nemo, &args.diar_model, g, args.diar_preset.as_deref())
+                    })
                 };
                 let (mut diar, gpu) = match created {
                     Ok(v) => v,
@@ -399,24 +413,31 @@ fn feed_wav(path: &Path, realtime: bool, mut feed: impl FnMut(Vec<f32>)) -> Resu
             spec.channels
         );
     }
-    let samples: Vec<f32> = match spec.sample_format {
-        hound::SampleFormat::Float => reader.samples::<f32>().collect::<Result<_, _>>()?,
+    type Samples<'a> = Box<dyn Iterator<Item = hound::Result<f32>> + 'a>;
+    let samples: Samples<'_> = match spec.sample_format {
+        hound::SampleFormat::Float => Box::new(reader.samples::<f32>()),
         hound::SampleFormat::Int => {
             let scale = (1u64 << (spec.bits_per_sample - 1)) as f32;
-            reader
-                .samples::<i32>()
-                .map(|s| s.map(|v| v as f32 / scale))
-                .collect::<Result<_, _>>()?
+            Box::new(reader.samples::<i32>().map(move |s| s.map(|v| v as f32 / scale)))
         }
     };
     let block = SAMPLE_RATE as usize / 10; // 100 ms
     let started = Instant::now();
-    for (i, chunk) in samples.chunks(block).enumerate() {
-        feed(chunk.to_vec());
-        if realtime {
-            let due = Duration::from_millis(100 * (i as u64 + 1));
-            std::thread::sleep(due.saturating_sub(started.elapsed()));
+    let mut chunk = Vec::with_capacity(block);
+    let mut sent = 0u64;
+    for sample in samples {
+        chunk.push(sample?);
+        if chunk.len() == block {
+            feed(std::mem::replace(&mut chunk, Vec::with_capacity(block)));
+            sent += 1;
+            if realtime {
+                let due = Duration::from_millis(100 * sent);
+                std::thread::sleep(due.saturating_sub(started.elapsed()));
+            }
         }
+    }
+    if !chunk.is_empty() {
+        feed(chunk);
     }
     Ok(())
 }

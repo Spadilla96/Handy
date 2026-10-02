@@ -440,9 +440,6 @@ pub struct AppSettings {
     /// None means the system default output device.
     #[serde(default)]
     pub system_audio_device: Option<String>,
-    /// Offer to record when a Microsoft Teams meeting starts (Windows).
-    #[serde(default = "default_meeting_detection_enabled")]
-    pub meeting_detection_enabled: bool,
     #[serde(default = "default_translate_to_english")]
     pub translate_to_english: bool,
     #[serde(default = "default_selected_language")]
@@ -606,10 +603,6 @@ fn default_overlay_style() -> OverlayStyle {
 }
 
 fn default_vad_enabled() -> bool {
-    true
-}
-
-fn default_meeting_detection_enabled() -> bool {
     true
 }
 
@@ -961,7 +954,6 @@ pub fn get_default_settings() -> AppSettings {
         selected_output_device: None,
         audio_source: AudioSource::default(),
         system_audio_device: None,
-        meeting_detection_enabled: default_meeting_detection_enabled(),
         translate_to_english: false,
         selected_language: "auto".to_string(),
         overlay_position: default_overlay_position(),

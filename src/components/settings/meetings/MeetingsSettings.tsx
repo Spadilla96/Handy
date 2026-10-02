@@ -1,23 +1,13 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { listen } from "@tauri-apps/api/event";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { ArrowLeft, Circle, Copy, Download, Square, Trash2 } from "lucide-react";
-import {
-  commands,
-  type Meeting,
-  type MeetingModelsStatus,
-  type MeetingStatus,
-  type MeetingSummary,
-  type MeetingTranscriptEvent,
-  type Utterance,
-} from "@/bindings";
+import { ArrowLeft, Copy, Download, Loader2, Trash2, X } from "lucide-react";
+import { commands, type Meeting, type Utterance } from "@/bindings";
 import { SettingsGroup } from "../../ui/SettingsGroup";
-import { ToggleSwitch } from "../../ui/ToggleSwitch";
 import { Button } from "../../ui/Button";
 import { AudioPlayer, AudioPlayerGroup } from "../../ui/AudioPlayer";
-import { useSettings } from "../../../hooks/useSettings";
 import { copyToClipboard } from "../history/clipboard";
+import { useMeetingStore } from "../../../stores/meetingStore";
 
 const formatTs = (secs: number) => {
   const s = Math.max(0, Math.floor(secs));
@@ -87,22 +77,24 @@ const Transcript: React.FC<TranscriptProps> = ({
 
 export const MeetingsSettings: React.FC = () => {
   const { t } = useTranslation();
-  const { getSetting, updateSetting, isUpdating } = useSettings();
-
-  const [status, setStatus] = useState<MeetingStatus | null>(null);
-  const [models, setModels] = useState<MeetingModelsStatus | null>(null);
-  const [meetings, setMeetings] = useState<MeetingSummary[]>([]);
+  const models = useMeetingStore((state) => state.models);
+  const meetings = useMeetingStore((state) => state.meetings);
+  const job = useMeetingStore((state) => state.job);
+  const openRequest = useMeetingStore((state) => state.openRequest);
+  const consumeOpenRequest = useMeetingStore(
+    (state) => state.consumeOpenRequest,
+  );
+  const refreshList = useMeetingStore((state) => state.refreshMeetings);
+  const downloadModels = useMeetingStore((state) => state.downloadModels);
+  const cancelJob = useMeetingStore((state) => state.cancel);
   const [selected, setSelected] = useState<Meeting | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [now, setNow] = useState(() => Date.now());
   const [editingTitle, setEditingTitle] = useState<string | null>(null);
   const [editingSpeaker, setEditingSpeaker] = useState<{
     speaker: number;
     name: string;
   } | null>(null);
-  const liveEndRef = useRef<HTMLDivElement>(null);
 
   const genericName = useCallback(
     (speaker: number) =>
@@ -112,16 +104,6 @@ export const MeetingsSettings: React.FC = () => {
     [t],
   );
 
-  const refreshStatus = useCallback(async () => {
-    setStatus(await commands.getMeetingStatus());
-  }, []);
-  const refreshModels = useCallback(async () => {
-    setModels(await commands.getMeetingModelsStatus());
-  }, []);
-  const refreshList = useCallback(async () => {
-    const res = await commands.listMeetings();
-    if (res.status === "ok") setMeetings(res.data);
-  }, []);
   const openMeeting = useCallback(async (id: number) => {
     const res = await commands.getMeeting(id);
     if (res.status === "ok") setSelected(res.data);
@@ -129,83 +111,15 @@ export const MeetingsSettings: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    refreshStatus();
-    refreshModels();
     refreshList();
-    const unlisteners = [
-      listen("meeting-state", () => {
-        refreshStatus();
-        refreshList();
-      }),
-      listen<MeetingTranscriptEvent>("meeting-transcript", (event) => {
-        setStatus((prev) =>
-          prev
-            ? {
-                ...prev,
-                committed: [...prev.committed, ...event.payload.committed],
-                tail: event.payload.tail,
-                audio_s: event.payload.audio_s,
-                transcribed_s: event.payload.transcribed_s,
-              }
-            : prev,
-        );
-      }),
-      listen<MeetingModelsStatus>("meeting-models-progress", (event) =>
-        setModels(event.payload),
-      ),
-      listen<number>("meeting-saved", (event) => {
-        refreshList();
-        openMeeting(event.payload);
-      }),
-      listen<string>("meeting-error", (event) => setError(event.payload)),
-    ];
-    return () => {
-      unlisteners.forEach((p) => p.then((un) => un()));
-    };
-  }, [refreshStatus, refreshModels, refreshList, openMeeting]);
+  }, [refreshList]);
 
-  // Clock for the elapsed-time display while recording.
+  // "View meeting" from History (or a toast) lands here.
   useEffect(() => {
-    if (!status?.active) return;
-    const id = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, [status?.active]);
-
-  // Keep the live transcript scrolled to the newest line.
-  useEffect(() => {
-    liveEndRef.current?.scrollIntoView({ block: "nearest" });
-  }, [status?.committed.length, status?.tail]);
-
-  const start = async () => {
-    setError(null);
-    setBusy(true);
-    const res = await commands.startMeeting(false);
-    setBusy(false);
-    if (res.status === "error") {
-      setError(
-        res.error === "models-missing"
-          ? t("meetings.errors.modelsMissing")
-          : res.error,
-      );
-    }
-    refreshStatus();
-  };
-
-  const stop = async () => {
-    setError(null);
-    setBusy(true);
-    const res = await commands.stopMeeting();
-    setBusy(false);
-    if (res.status === "error") setError(res.error);
-    refreshStatus();
-  };
-
-  const download = async () => {
-    setError(null);
-    const res = await commands.downloadMeetingModels();
-    if (res.status === "error") setError(res.error);
-    refreshModels();
-  };
+    if (openRequest === null) return;
+    const id = consumeOpenRequest();
+    if (id !== null) openMeeting(id);
+  }, [openRequest, consumeOpenRequest, openMeeting]);
 
   const nameFor = (meeting: Meeting) => (speaker: number) =>
     meeting.speaker_names[String(speaker)] ?? genericName(speaker);
@@ -265,14 +179,11 @@ export const MeetingsSettings: React.FC = () => {
     return res.status === "ok" ? convertFileSrc(res.data, "asset") : null;
   };
 
-  const lag =
-    status?.active && !status.finishing
-      ? Math.max(0, status.audio_s - status.transcribed_s)
-      : 0;
-  const elapsed =
-    status?.active && status.started_at
-      ? (now - status.started_at * 1000) / 1000
-      : 0;
+  const download = async () => {
+    setError(null);
+    await downloadModels();
+  };
+
   const percent =
     models && models.total > 0
       ? Math.round((models.downloaded / models.total) * 100)
@@ -376,24 +287,38 @@ export const MeetingsSettings: React.FC = () => {
   }
 
   // ---- Main view ------------------------------------------------------------
-  const live = status ? [...status.committed, ...status.tail] : [];
   return (
     <div className="max-w-3xl w-full mx-auto space-y-6">
       <SettingsGroup
         title={t("meetings.title")}
         description={t("meetings.description")}
       >
-        <ToggleSwitch
-          checked={getSetting("meeting_detection_enabled") ?? true}
-          onChange={(enabled) =>
-            updateSetting("meeting_detection_enabled", enabled)
-          }
-          isUpdating={isUpdating("meeting_detection_enabled")}
-          label={t("meetings.detection.label")}
-          description={t("meetings.detection.description")}
-          descriptionMode="inline"
-          grouped={true}
-        />
+        {job ? (
+          <div className="p-4 flex items-center gap-3">
+            <Loader2 size={16} className="animate-spin text-logo-primary" />
+            <div className="flex-1 space-y-1">
+              <p className="text-sm">
+                {t("meetings.diarize.running", {
+                  percent: Math.round(job.progress * 100),
+                })}
+              </p>
+              <div className="h-1 rounded bg-mid-gray/20 overflow-hidden">
+                <div
+                  className="h-full bg-logo-primary transition-[width]"
+                  style={{ width: `${Math.round(job.progress * 100)}%` }}
+                />
+              </div>
+            </div>
+            <Button variant="secondary" size="sm" onClick={cancelJob}>
+              <span className="inline-flex items-center gap-1">
+                <X size={14} />
+                {t("meetings.diarize.cancel")}
+              </span>
+            </Button>
+          </div>
+        ) : (
+          <p className="p-4 text-sm text-mid-gray">{t("meetings.howTo")}</p>
+        )}
       </SettingsGroup>
 
       {models && !models.ready && (
@@ -415,60 +340,7 @@ export const MeetingsSettings: React.FC = () => {
         </SettingsGroup>
       )}
 
-      <div className="space-y-3">
-        <div className="flex items-center gap-3">
-          {status?.active ? (
-            <Button
-              variant="danger"
-              disabled={busy || status.finishing}
-              onClick={stop}
-            >
-              <span className="inline-flex items-center gap-2">
-                <Square size={14} />
-                {status.finishing ? t("meetings.finishing") : t("meetings.stop")}
-              </span>
-            </Button>
-          ) : (
-            <Button
-              variant="primary"
-              disabled={busy || !models?.ready}
-              onClick={start}
-            >
-              <span className="inline-flex items-center gap-2">
-                <Circle size={14} />
-                {t("meetings.start")}
-              </span>
-            </Button>
-          )}
-          {status?.active && !status.finishing && (
-            <span className="text-sm inline-flex items-center gap-2">
-              <span className="inline-block w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-              {t("meetings.recording")} {formatTs(elapsed)}
-            </span>
-          )}
-          {status?.backend && (
-            <span className="text-xs text-mid-gray">
-              {t("meetings.backend", { backend: status.backend })}
-            </span>
-          )}
-        </div>
-        {lag > 15 && (
-          <p className="text-xs text-amber-400">
-            {t("meetings.behind", { seconds: Math.round(lag) })}
-          </p>
-        )}
-        {error && <p className="text-xs text-red-400">{error}</p>}
-        {status?.active && (
-          <div className="max-h-96 overflow-y-auto rounded-lg border border-mid-gray/20 p-4">
-            {live.length === 0 ? (
-              <p className="text-sm text-mid-gray">{t("meetings.waiting")}</p>
-            ) : (
-              <Transcript utterances={live} nameFor={genericName} />
-            )}
-            <div ref={liveEndRef} />
-          </div>
-        )}
-      </div>
+      {error && <p className="text-xs text-red-400">{error}</p>}
 
       <SettingsGroup title={t("meetings.list.title")}>
         {meetings.length === 0 ? (

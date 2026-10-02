@@ -2,42 +2,13 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Manager};
 
+use crate::managers::history::HistoryManager;
 use crate::managers::meeting::{
-    err_string, Meeting, MeetingManager, MeetingModelsStatus, MeetingStatus, MeetingSummary,
+    err_string, DiarizationJob, Meeting, MeetingManager, MeetingModelsStatus, MeetingSummary,
 };
-use crate::meeting_detector;
-use crate::settings::{get_settings, write_settings};
 
 fn manager(app: &AppHandle) -> Arc<MeetingManager> {
     app.state::<Arc<MeetingManager>>().inner().clone()
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn start_meeting(app: AppHandle, auto_started: bool) -> Result<(), String> {
-    let m = manager(&app);
-    tokio::task::spawn_blocking(move || m.start(auto_started))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(err_string)
-}
-
-/// Stops the recording and waits for the final transcript; returns the id of
-/// the saved meeting.
-#[tauri::command]
-#[specta::specta]
-pub async fn stop_meeting(app: AppHandle) -> Result<i64, String> {
-    let m = manager(&app);
-    tokio::task::spawn_blocking(move || m.stop())
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(err_string)
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn get_meeting_status(app: AppHandle) -> MeetingStatus {
-    manager(&app).status()
 }
 
 #[tauri::command]
@@ -114,39 +85,33 @@ pub fn save_meeting_markdown(app: AppHandle, id: i64) -> Result<String, String> 
         .map_err(err_string)
 }
 
-/// "Record" from the Teams prompt: close it and start an auto-stopping session.
+/// Start turning a history entry's recording into a meeting. Returns once the
+/// worker is running; the outcome arrives as `meeting-saved` or
+/// `meeting-diarize-failed`.
 #[tauri::command]
 #[specta::specta]
-pub async fn accept_meeting_prompt(app: AppHandle) -> Result<(), String> {
-    meeting_detector::close_prompt(&app);
-    let m = manager(&app);
-    let result = tokio::task::spawn_blocking(move || m.start(true))
+pub async fn diarize_history_entry(app: AppHandle, id: i64) -> Result<(), String> {
+    let history = app.state::<Arc<HistoryManager>>().inner().clone();
+    let entry = history
+        .get_entry_by_id(id)
         .await
-        .map_err(|e| e.to_string())?;
-    if let Err(e) = &result {
-        if e.to_string() == "models-missing" {
-            // Take the user to the Meetings page to download the models.
-            if let Some(main) = app.get_webview_window("main") {
-                let _ = main.show();
-                let _ = main.set_focus();
-            }
-            let _ = tauri::Emitter::emit(&app, "meeting-open-page", ());
-        }
-    }
-    result.map_err(err_string)
+        .map_err(err_string)?
+        .ok_or_else(|| format!("History entry {id} not found"))?;
+    let m = manager(&app);
+    tokio::task::spawn_blocking(move || m.start_diarization(entry))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(err_string)
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn dismiss_meeting_prompt(app: AppHandle) {
-    meeting_detector::close_prompt(&app);
+pub fn cancel_meeting_diarization(app: AppHandle) {
+    manager(&app).cancel_diarization();
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn change_meeting_detection_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
-    let mut settings = get_settings(&app);
-    settings.meeting_detection_enabled = enabled;
-    write_settings(&app, settings);
-    Ok(())
+pub fn get_diarization_job(app: AppHandle) -> Option<DiarizationJob> {
+    manager(&app).current_job()
 }

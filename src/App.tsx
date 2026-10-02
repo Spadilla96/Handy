@@ -28,6 +28,7 @@ import { Sidebar, SidebarSection, SECTIONS_CONFIG } from "./components/Sidebar";
 import { WhatsNewGate } from "./components/whats-new";
 import { useSettings } from "./hooks/useSettings";
 import { useSettingsStore } from "./stores/settingsStore";
+import { useMeetingStore } from "./stores/meetingStore";
 import { commands } from "@/bindings";
 import { getLanguageDirection, initializeRTL } from "@/lib/utils/rtl";
 
@@ -94,16 +95,15 @@ function App() {
     checkOnboardingStatus();
   }, []);
 
-  // The Teams meeting prompt asks us to show the Meetings page (e.g. when
-  // its models still need downloading).
+  // Meetings are created from History; "View meeting" switches pages.
+  const initializeMeetings = useMeetingStore((state) => state.initialize);
+  const meetingNavigateNonce = useMeetingStore((state) => state.navigateNonce);
   useEffect(() => {
-    const unlisten = listen("meeting-open-page", () =>
-      setCurrentSection("meetings"),
-    );
-    return () => {
-      unlisten.then((un) => un());
-    };
-  }, []);
+    initializeMeetings();
+  }, [initializeMeetings]);
+  useEffect(() => {
+    if (meetingNavigateNonce > 0) setCurrentSection("meetings");
+  }, [meetingNavigateNonce]);
 
   // Initialize RTL direction when language changes
   useEffect(() => {

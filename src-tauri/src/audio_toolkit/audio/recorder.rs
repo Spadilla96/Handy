@@ -104,9 +104,6 @@ pub struct AudioRecorder {
     config_cache: Arc<Mutex<Option<(String, cpal::SupportedStreamConfig)>>>,
     /// Set by cpal when the active input stream can no longer capture.
     stream_error: Arc<AtomicBool>,
-    /// When false, captured frames still reach the audio callback but are not
-    /// kept for `stop()` (long meetings stream out instead of piling up in RAM).
-    retain_samples: Arc<AtomicBool>,
 }
 
 impl AudioRecorder {
@@ -121,14 +118,7 @@ impl AudioRecorder {
             selected_channel: None,
             config_cache: Arc::new(Mutex::new(None)),
             stream_error: Arc::new(AtomicBool::new(false)),
-            retain_samples: Arc::new(AtomicBool::new(true)),
         })
-    }
-
-    /// Choose whether the next recordings keep their samples for `stop()`.
-    /// Takes effect immediately, including on an already-open stream.
-    pub fn set_retain_samples(&self, retain: bool) {
-        self.retain_samples.store(retain, Ordering::Release);
     }
 
     /// Attach a single VAD engine, reconfigured per session for the offline vs
@@ -221,7 +211,6 @@ impl AudioRecorder {
         let selected_channel = self.selected_channel;
         let config_cache = Arc::clone(&self.config_cache);
         let stream_error = Arc::clone(&self.stream_error);
-        let retain_samples = Arc::clone(&self.retain_samples);
 
         let worker = std::thread::spawn(move || {
             let transport = Arc::new(CaptureTransportState::default());
@@ -342,7 +331,6 @@ impl AudioRecorder {
                         audio_cb,
                         stream_running_at,
                     );
-                    processor.retain_samples = retain_samples;
                     let (secondary_keepalive, secondary_consumer) = match secondary_stream {
                         Some(s) => {
                             processor.enable_secondary(s.sample_rate);
@@ -897,7 +885,6 @@ struct CaptureProcessor {
     max_drain_samples: usize,
     first_chunk_logged: bool,
     secondary: Option<SecondaryMix>,
-    retain_samples: Arc<AtomicBool>,
 
     // ---- recording-scoped: reset by `begin_recording` ------------------- //
     vad_policy: VadPolicy,
@@ -952,7 +939,6 @@ impl CaptureProcessor {
             max_drain_samples,
             first_chunk_logged: false,
             secondary: None,
-            retain_samples: Arc::new(AtomicBool::new(true)),
             vad_policy: VadPolicy::Offline,
             processed_samples: Vec::new(),
             awaiting_first_captured_chunk: None,
@@ -1057,9 +1043,6 @@ impl CaptureProcessor {
                 &mut self.processed_samples,
             )
         });
-        if !self.retain_samples.load(Ordering::Acquire) {
-            self.processed_samples.clear();
-        }
 
         if let Some(started) = self.awaiting_first_captured_chunk.take() {
             log::debug!(

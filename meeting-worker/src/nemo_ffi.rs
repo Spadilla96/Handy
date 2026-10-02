@@ -215,13 +215,23 @@ pub struct Diarizer<'a> {
 }
 
 impl<'a> Diarizer<'a> {
-    pub fn new(nemo: &'a Nemo, model_path: &Path, gpu: i32) -> Result<Self> {
+    /// `preset` picks the diarization geometry (`"streaming"`, `"offline"`);
+    /// `None` keeps the library default.
+    pub fn new(
+        nemo: &'a Nemo,
+        model_path: &Path,
+        gpu: i32,
+        preset: Option<&str>,
+    ) -> Result<Self> {
         let path = cstring(model_path)?;
+        let preset = preset
+            .map(|p| CString::new(p).map_err(|_| anyhow!("preset contains NUL")))
+            .transpose()?;
         let cfg = DiarModelConfig {
             size: std::mem::size_of::<DiarModelConfig>(),
             model_path: path.as_ptr(),
             gpu,
-            preset: ptr::null(),
+            preset: preset.as_ref().map_or(ptr::null(), |p| p.as_ptr()),
             chunk_frames: 0,
             right_context_frames: 0,
             left_context_frames: -1,

@@ -12,7 +12,6 @@ mod helpers;
 mod input;
 mod llm_client;
 mod managers;
-mod meeting_detector;
 mod memory;
 mod overlay;
 mod paste_tx;
@@ -221,7 +220,6 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     match managers::meeting::MeetingManager::new(app_handle) {
         Ok(meeting_manager) => {
             app_handle.manage(Arc::new(meeting_manager));
-            meeting_detector::start(app_handle);
         }
         Err(e) => log::error!("Failed to initialize meeting manager: {e:#}"),
     }
@@ -753,9 +751,6 @@ pub fn run(cli_args: CliArgs) {
             commands::audio::get_selected_microphone,
             commands::audio::set_audio_source,
             commands::audio::set_system_audio_device,
-            commands::meeting::start_meeting,
-            commands::meeting::stop_meeting,
-            commands::meeting::get_meeting_status,
             commands::meeting::get_meeting_models_status,
             commands::meeting::download_meeting_models,
             commands::meeting::list_meetings,
@@ -766,9 +761,9 @@ pub fn run(cli_args: CliArgs) {
             commands::meeting::get_meeting_audio_path,
             commands::meeting::export_meeting_markdown,
             commands::meeting::save_meeting_markdown,
-            commands::meeting::accept_meeting_prompt,
-            commands::meeting::dismiss_meeting_prompt,
-            commands::meeting::change_meeting_detection_setting,
+            commands::meeting::diarize_history_entry,
+            commands::meeting::cancel_meeting_diarization,
+            commands::meeting::get_diarization_job,
             commands::audio::get_available_output_devices,
             commands::audio::set_selected_output_device,
             commands::audio::get_selected_output_device,

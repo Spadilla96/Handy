@@ -233,8 +233,6 @@ fn restore_mute(prev_muted: Option<bool>) {
 }
 
 const WHISPER_SAMPLE_RATE: usize = 16000;
-/// Binding id used for meeting recordings, distinct from every shortcut.
-pub const MEETING_BINDING_ID: &str = "meeting";
 
 /* ──────────────────────────────────────────────────────────────── */
 
@@ -349,7 +347,6 @@ fn create_audio_recorder(
             let router = stream_router;
             move |frame| {
                 router.feed(frame);
-                crate::managers::meeting::feed_meeting_audio(frame);
             }
         });
 
@@ -407,9 +404,6 @@ pub struct AudioRecordingManager {
     /// so the retry re-enumerates. The system-default case is never cached —
     /// the recorder resolves the current default itself, cheaply.
     cached_device: Arc<Mutex<Option<(String, cpal::Device)>>>,
-    /// Audio source forced by meeting mode, overriding the dictation setting
-    /// while a meeting records.
-    source_override: Arc<Mutex<Option<AudioSource>>>,
 }
 
 impl AudioRecordingManager {
@@ -441,7 +435,6 @@ impl AudioRecordingManager {
             recording_active: Arc::new(AtomicBool::new(false)),
             capture_generation: Arc::new(AtomicU64::new(0)),
             cached_device: Arc::new(Mutex::new(None)),
-            source_override: Arc::new(Mutex::new(None)),
         };
 
         // Always-on?  Open immediately.
@@ -474,15 +467,6 @@ impl AudioRecordingManager {
             Some(name) => DesiredMicrophone::Selected(name.clone()),
             None => DesiredMicrophone::Default,
         }
-    }
-
-    /// Persisted settings with any meeting-mode audio source override applied.
-    fn effective_settings(&self) -> AppSettings {
-        let mut settings = get_settings(&self.app_handle);
-        if let Some(source) = *self.source_override.lock().unwrap() {
-            settings.audio_source = source;
-        }
-        settings
     }
 
     pub fn invalidate_device_cache(&self) {
@@ -649,7 +633,7 @@ impl AudioRecordingManager {
     /// Snapshots the system's prior mute state first so `remove_mute` can
     /// restore it instead of unconditionally unmuting.
     pub fn apply_mute(&self) {
-        let settings = self.effective_settings();
+        let settings = get_settings(&self.app_handle);
         // Muting the output would silence the very audio being captured.
         if !settings.mute_while_recording || settings.audio_source.captures_system() {
             return;
@@ -762,7 +746,7 @@ impl AudioRecordingManager {
         // recorder resolves the system default itself, and a machine with no
         // input devices at all fails inside open() with the same
         // "No input device found" error this used to check for.
-        let settings = self.effective_settings();
+        let settings = get_settings(&self.app_handle);
         let resolve_started = Instant::now();
         let mut resolution = self.resolve_microphone_device(&settings);
         let secondary = self.resolve_secondary_device(&settings);
@@ -926,57 +910,6 @@ impl AudioRecordingManager {
         } else {
             Err("Already recording".to_string())
         }
-    }
-
-    /// Begin a meeting recording: microphone mixed with system audio (on
-    /// Windows), no VAD so the timeline stays continuous, and samples streamed
-    /// out through the audio callback instead of being kept in memory.
-    pub fn try_start_meeting(&self) -> Result<(), String> {
-        if !matches!(*self.state.lock().unwrap(), RecordingState::Idle) {
-            return Err("Finish the current dictation before starting a meeting".to_string());
-        }
-        let source = if cfg!(target_os = "windows") {
-            AudioSource::MicrophoneAndSystem
-        } else {
-            AudioSource::Microphone
-        };
-        *self.source_override.lock().unwrap() = Some(source);
-        // Reopen the stream so it picks up the meeting devices.
-        self.close_generation.fetch_add(1, Ordering::SeqCst);
-        self.stop_microphone_stream();
-        self.invalidate_device_cache();
-        if let Err(e) = self.preload_vad() {
-            *self.source_override.lock().unwrap() = None;
-            return Err(format!("{e}"));
-        }
-        if let Some(rec) = self.recorder.lock().unwrap().as_ref() {
-            rec.set_retain_samples(false);
-        }
-        match self.try_start_recording(MEETING_BINDING_ID, VadPolicy::Disabled) {
-            Ok(_readiness) => Ok(()),
-            Err(e) => {
-                self.restore_after_meeting();
-                Err(e)
-            }
-        }
-    }
-
-    /// End a meeting recording and return the recorder to dictation settings.
-    pub fn stop_meeting(&self) {
-        let cancel_generation = self.cancel_generation();
-        let _ = self.stop_recording(MEETING_BINDING_ID, cancel_generation);
-        self.restore_after_meeting();
-    }
-
-    fn restore_after_meeting(&self) {
-        *self.source_override.lock().unwrap() = None;
-        if let Some(rec) = self.recorder.lock().unwrap().as_ref() {
-            rec.set_retain_samples(true);
-        }
-        // Close so the next dictation reopens with its own devices.
-        self.close_generation.fetch_add(1, Ordering::SeqCst);
-        self.stop_microphone_stream();
-        self.invalidate_device_cache();
     }
 
     /// Replace the VAD implementation while idle. If the microphone stream is

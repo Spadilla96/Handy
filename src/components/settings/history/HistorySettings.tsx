@@ -1,7 +1,16 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { readFile } from "@tauri-apps/plugin-fs";
-import { Check, Copy, FolderOpen, RotateCcw, Star, Trash2 } from "lucide-react";
+import {
+  Check,
+  Copy,
+  FolderOpen,
+  Loader2,
+  RotateCcw,
+  Star,
+  Trash2,
+  Users,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
@@ -15,6 +24,7 @@ import { formatDateTime } from "@/utils/dateFormat";
 import { AudioPlayer, AudioPlayerGroup } from "../../ui/AudioPlayer";
 import { Button } from "../../ui/Button";
 import { copyToClipboard } from "./clipboard";
+import { useMeetingStore } from "../../../stores/meetingStore";
 
 const IconButton: React.FC<{
   onClick: () => void;
@@ -38,6 +48,89 @@ const IconButton: React.FC<{
 );
 
 const PAGE_SIZE = 30;
+
+/** Turns an entry's recording into a speaker-labeled meeting, or opens it. */
+const MeetingButton: React.FC<{ historyId: number; disabled?: boolean }> = ({
+  historyId,
+  disabled,
+}) => {
+  const { t } = useTranslation();
+  const meetingId = useMeetingStore(
+    (state) => state.meetingByHistory[historyId],
+  );
+  const job = useMeetingStore((state) => state.job);
+  const models = useMeetingStore((state) => state.models);
+  const diarize = useMeetingStore((state) => state.diarize);
+  const cancel = useMeetingStore((state) => state.cancel);
+  const showMeeting = useMeetingStore((state) => state.showMeeting);
+  const downloadModels = useMeetingStore((state) => state.downloadModels);
+  const refreshModels = useMeetingStore((state) => state.refreshModels);
+  const [downloading, setDownloading] = useState(false);
+
+  if (job?.history_id === historyId || downloading) {
+    const percent = downloading
+      ? models && models.total > 0
+        ? Math.round((models.downloaded / models.total) * 100)
+        : 0
+      : Math.round((job?.progress ?? 0) * 100);
+    return (
+      <IconButton
+        onClick={() => !downloading && cancel()}
+        title={
+          downloading
+            ? t("meetings.models.downloading", { percent })
+            : t("settings.history.meetingProcessing", { percent })
+        }
+        active
+      >
+        <span className="inline-flex items-center gap-1">
+          <Loader2 width={16} height={16} className="animate-spin" />
+          <span className="text-[10px] tabular-nums">{percent}%</span>
+        </span>
+      </IconButton>
+    );
+  }
+
+  if (meetingId !== undefined) {
+    return (
+      <IconButton
+        onClick={() => showMeeting(meetingId)}
+        title={t("settings.history.viewMeeting")}
+        active
+      >
+        <Users width={16} height={16} />
+      </IconButton>
+    );
+  }
+
+  const start = async () => {
+    await refreshModels();
+    if (!useMeetingStore.getState().models?.ready) {
+      if (!window.confirm(t("settings.history.meetingDownloadConfirm"))) {
+        return;
+      }
+      setDownloading(true);
+      const ok = await downloadModels();
+      setDownloading(false);
+      if (!ok) return;
+    }
+    await diarize(historyId);
+  };
+
+  return (
+    <IconButton
+      onClick={start}
+      disabled={disabled || job !== null}
+      title={
+        job !== null
+          ? t("settings.history.meetingBusy")
+          : t("settings.history.markMeeting")
+      }
+    >
+      <Users width={16} height={16} />
+    </IconButton>
+  );
+};
 
 interface OpenRecordingsButtonProps {
   onClick: () => void;
@@ -385,6 +478,7 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
               fill={entry.saved ? "currentColor" : "none"}
             />
           </IconButton>
+          <MeetingButton historyId={entry.id} disabled={retrying} />
           <IconButton
             onClick={handleRetranscribe}
             disabled={retrying}
