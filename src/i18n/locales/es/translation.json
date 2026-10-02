@@ -7,7 +7,8 @@
     "model": "Modelo",
     "quit": "Salir",
     "cancel": "Cancelar",
-    "secureInputWarning": "⚠ Atajos bloqueados por Secure Input"
+    "secureInputWarning": "⚠ Atajos bloqueados por Secure Input",
+    "showOverlay": "Mostrar indicador de grabación"
   },
   "sidebar": {
     "general": "General",
@@ -327,7 +328,9 @@
           "options": {
             "bottom": "Abajo",
             "top": "Arriba"
-          }
+          },
+          "reset": "Restablecer",
+          "resetHint": "Puedes arrastrar el overlay a cualquier lugar; esto lo devuelve arriba o abajo."
         }
       },
       "pasteMethod": {
@@ -716,7 +719,10 @@
   },
   "overlay": {
     "transcribing": "Transcribiendo...",
-    "processing": "Procesando..."
+    "processing": "Procesando...",
+    "minimize": "Ocultar hasta que termine esta grabación (se recupera desde la bandeja)",
+    "expand": "Mostrar el texto en vivo",
+    "collapse": "Reducir a una píldora pequeña"
   },
   "whatsNew": {
     "title": "Nuevo en Handy v{{version}}"

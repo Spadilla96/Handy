@@ -7,7 +7,8 @@
     "model": "Model",
     "quit": "Quit",
     "cancel": "Cancel",
-    "secureInputWarning": "⚠ Shortcuts blocked by Secure Input"
+    "secureInputWarning": "⚠ Shortcuts blocked by Secure Input",
+    "showOverlay": "Show Recording Indicator"
   },
   "sidebar": {
     "general": "General",
@@ -327,7 +328,9 @@
           "options": {
             "bottom": "Bottom",
             "top": "Top"
-          }
+          },
+          "reset": "Reset",
+          "resetHint": "You can drag the overlay anywhere; this puts it back at the top or bottom."
         }
       },
       "pasteMethod": {
@@ -719,7 +722,10 @@
   },
   "overlay": {
     "transcribing": "Transcribing...",
-    "processing": "Processing..."
+    "processing": "Processing...",
+    "minimize": "Hide until this recording ends (show it again from the tray)",
+    "expand": "Show live text",
+    "collapse": "Shrink to a small pill"
   },
   "secureInput": {
     "blockedWithCulprit_one": "{{name}} may be blocking 1 shortcut",

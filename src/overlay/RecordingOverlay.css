@@ -50,11 +50,14 @@
      the card's max footprint (--ov-work-w for compact, --ov-open-w for Live),
      since the card is anchored flush to the screen edge in CSS. Keep overlay.rs
      in sync when these change. */
-  --ov-rest-w: 172px; /* resting compact pill (minimal, recording) -- roomy enough
-                         for the English working label before the grow starts */
-  --ov-pill-w: 184px; /* base width / Live pill before it opens or collapses */
-  --ov-work-w: 216px; /* working pill (transcribing / polishing) -- wide enough to
-                         center longer labels; shared by Live (collapsed) + minimal */
+  --ov-rest-w: 200px; /* resting compact pill (minimal, recording): grip, dot,
+                         waveform, minimize + cancel */
+  --ov-pill-w: 236px; /* base width / Live pill before it opens or collapses
+                         (adds the panel/pill toggle) */
+  --ov-work-w: 236px; /* minimal working pill (transcribing / polishing) -- wide
+                         enough to center longer labels */
+  --ov-live-work-w: 272px; /* Live working pill (collapsed): label + 3 controls */
+  --ov-mini-w: 300px; /* Live collapsed to a pill by the user: timer + 3 controls */
   --ov-open-w: 392px; /* Live panel, expanded */
   --ov-base-h: 40px; /* control-row height (.sbase) */
   --ov-cap-max-h: 64px; /* max height of the scrolling live-text region */
@@ -203,8 +206,29 @@
   border-radius: 16px;
 }
 .scard.working {
-  width: var(--ov-work-w);
+  width: var(--ov-live-work-w);
   border-radius: 18px;
+}
+/* Live collapsed to a pill by the user: no text region, timer always shown. */
+.scard.live-mini {
+  width: var(--ov-mini-w);
+}
+.scard.live-mini .stimer {
+  opacity: 1;
+}
+
+/* The whole card drags the overlay (buttons excepted). */
+.scard {
+  cursor: grab;
+}
+.sgrip {
+  width: 6px;
+  height: 12px;
+  margin-right: 6px;
+  flex: none;
+  opacity: 0.55;
+  background-image: radial-gradient(var(--s-faint) 1px, transparent 1.3px);
+  background-size: 3px 4px;
 }
 
 /* Compact form: two fixed widths so the recording→working change is an animatable
@@ -309,7 +333,7 @@
 .sbase-r {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   justify-self: end;
 }
 .sdot {
@@ -439,6 +463,16 @@
 }
 .sx:active {
   transform: scale(0.95);
+}
+/* Secondary controls (minimize, panel/pill toggle): quieter than cancel. */
+.sx.sx-small {
+  width: 18px;
+  height: 18px;
+  background: transparent;
+}
+.sx.sx-small svg {
+  width: 10px;
+  height: 10px;
 }
 
 /* working state (transcribing / polishing) — spinner + label */

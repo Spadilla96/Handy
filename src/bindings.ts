@@ -864,6 +864,18 @@ async cancelMeetingDiarization() : Promise<void> {
 async getDiarizationJob() : Promise<DiarizationJob | null> {
     return await TAURI_INVOKE("get_diarization_job");
 },
+async beginOverlayDrag() : Promise<void> {
+    await TAURI_INVOKE("begin_overlay_drag");
+},
+async minimizeOverlay() : Promise<void> {
+    await TAURI_INVOKE("minimize_overlay");
+},
+async setOverlayLiveCompact(compact: boolean) : Promise<void> {
+    await TAURI_INVOKE("set_overlay_live_compact", { compact });
+},
+async resetOverlayPosition() : Promise<void> {
+    await TAURI_INVOKE("reset_overlay_position");
+},
 async getSelectedMicrophone() : Promise<Result<string, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_selected_microphone") };
@@ -1109,7 +1121,15 @@ vad_backend?: VadBackend;
  * not gated on this — that follows model capability. Migrated from the old
  * `overlay_position` (position `none` → style `None`).
  */
-overlay_style?: OverlayStyle }
+overlay_style?: OverlayStyle; 
+/**
+ * Where the user dragged the overlay to, overriding `overlay_position`.
+ */
+overlay_custom_anchor?: OverlayAnchor | null; 
+/**
+ * Show the Live overlay as the small pill instead of the text panel.
+ */
+overlay_live_compact?: boolean }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
 export type AvailableAccelerators = { transcribe: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }
@@ -1171,6 +1191,11 @@ sha256: string | null } } |
 export type ModelUnloadTimeout = "never" | "immediately" | "min_2" | "min_5" | "min_10" | "min_15" | "hour_1" | "sec_15"
 export type OrtAcceleratorSetting = "auto" | "cpu" | "cuda" | "directml" | "rocm"
 export type OverlayPosition = "top" | "bottom"
+/**
+ * A user-chosen overlay spot, in physical screen pixels: the horizontal center
+ * and the y of the edge the card hugs.
+ */
+export type OverlayAnchor = { x: number; y: number; edge: OverlayPosition }
 /**
  * Which recording overlay to display. `Minimal` and `Live` share one base
  * (the pill); `Live` grows into the panel that shows live transcription text.

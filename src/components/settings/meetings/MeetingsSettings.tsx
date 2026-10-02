@@ -62,7 +62,9 @@ const Transcript: React.FC<TranscriptProps> = ({
           <button
             type="button"
             className={`font-semibold ${speakerColor(u.speaker)} ${
-              onSpeakerClick ? "hover:underline cursor-pointer" : "cursor-default"
+              onSpeakerClick
+                ? "hover:underline cursor-pointer"
+                : "cursor-default"
             }`}
             onClick={() => onSpeakerClick?.(u.speaker)}
           >
@@ -227,7 +229,10 @@ export const MeetingsSettings: React.FC = () => {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <AudioPlayerGroup>
-            <AudioPlayer onLoadRequest={loadAudio} className="flex-1 min-w-48" />
+            <AudioPlayer
+              onLoadRequest={loadAudio}
+              className="flex-1 min-w-48"
+            />
           </AudioPlayerGroup>
           <Button variant="secondary" size="sm" onClick={copyMeeting}>
             <span className="inline-flex items-center gap-1">
@@ -344,7 +349,9 @@ export const MeetingsSettings: React.FC = () => {
 
       <SettingsGroup title={t("meetings.list.title")}>
         {meetings.length === 0 ? (
-          <p className="p-4 text-sm text-mid-gray">{t("meetings.list.empty")}</p>
+          <p className="p-4 text-sm text-mid-gray">
+            {t("meetings.list.empty")}
+          </p>
         ) : (
           meetings.map((m) => (
             <button

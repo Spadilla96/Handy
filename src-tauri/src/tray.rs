@@ -56,6 +56,8 @@ impl TrayIconState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct MenuInputs {
     busy: bool,
+    /// The user minimized the recording overlay; offer to show it again.
+    overlay_minimized: bool,
     warning: bool,
     model_loaded: bool,
     selected_model: String,
@@ -328,6 +330,7 @@ fn compute_desired(app: &AppHandle, icon_state: TrayIconState) -> TrayDesired {
         icon_path: get_icon_path(theme, icon_state, warning),
         menu: MenuInputs {
             busy: icon_state.is_busy(),
+            overlay_minimized: crate::overlay::is_overlay_minimized(),
             warning,
             model_loaded,
             selected_model: settings.selected_model,
@@ -514,7 +517,7 @@ fn build_menu(app: &AppHandle, inputs: &MenuInputs) -> tauri::Result<(Menu<tauri
 
     let menu = if inputs.busy {
         let cancel_i = MenuItem::with_id(app, "cancel", &strings.cancel, true, None::<&str>)?;
-        Menu::with_items(
+        let menu = Menu::with_items(
             app,
             &[
                 &version_i,
@@ -528,7 +531,18 @@ fn build_menu(app: &AppHandle, inputs: &MenuInputs) -> tauri::Result<(Menu<tauri
                 &separator()?,
                 &quit_i,
             ],
-        )?
+        )?;
+        if inputs.overlay_minimized {
+            let label = if strings.show_overlay.is_empty() {
+                get_tray_translations(Some("en".to_string())).show_overlay
+            } else {
+                strings.show_overlay.clone()
+            };
+            let show_overlay_i =
+                MenuItem::with_id(app, "show_overlay", &label, true, None::<&str>)?;
+            menu.insert(&show_overlay_i, 3)?;
+        }
+        menu
     } else {
         // Build model submenu — label is the active model name
         let submenu_label = inputs

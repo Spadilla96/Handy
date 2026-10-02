@@ -119,6 +119,16 @@ pub enum OverlayPosition {
     Bottom,
 }
 
+/// A user-chosen overlay spot, in physical screen pixels: the horizontal center
+/// and the y of the edge the card hugs. Anchoring an edge (rather than a corner)
+/// makes the overlay grow toward the middle of the screen when it changes size.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type)]
+pub struct OverlayAnchor {
+    pub x: i32,
+    pub y: i32,
+    pub edge: OverlayPosition,
+}
+
 /// Which recording overlay to display. `Minimal` and `Live` share one base
 /// (the pill); `Live` grows into the panel that shows live transcription text.
 /// `None` hides the overlay entirely. Decoupled from whether the model runs in
@@ -539,6 +549,12 @@ pub struct AppSettings {
     /// `overlay_position` (position `none` → style `None`).
     #[serde(default = "default_overlay_style")]
     pub overlay_style: OverlayStyle,
+    /// Where the user dragged the overlay to, overriding `overlay_position`.
+    #[serde(default)]
+    pub overlay_custom_anchor: Option<OverlayAnchor>,
+    /// Show the Live overlay as the small pill instead of the text panel.
+    #[serde(default)]
+    pub overlay_live_compact: bool,
 }
 
 fn default_model() -> String {
@@ -997,6 +1013,8 @@ pub fn get_default_settings() -> AppSettings {
         vad_enabled: default_vad_enabled(),
         vad_backend: VadBackend::default(),
         overlay_style: default_overlay_style(),
+        overlay_custom_anchor: None,
+        overlay_live_compact: false,
     }
 }
 

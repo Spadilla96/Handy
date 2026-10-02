@@ -43,8 +43,12 @@ const RecordingOverlay: React.FC = () => {
   // True once live text overflows the cap. A top overlay fades its top edge only
   // while overflowing, so the resting first line stays crisp flush under the pill.
   const [overflowing, setOverflowing] = useState(false);
+  // Live overlay collapsed to the pill (the user's choice; persisted).
+  const [compact, setCompact] = useState(false);
 
   const smoothedLevelsRef = useRef<number[]>(Array(16).fill(0));
+  // When capture started, so the timer survives the overlay being minimized.
+  const captureStartRef = useRef(Date.now());
   // Live-text scroll-back: the text region "sticks" to the newest line while the
   // user is at the bottom; if they scroll up to read history, auto-follow pauses
   // until they scroll back down.
@@ -72,9 +76,12 @@ const RecordingOverlay: React.FC = () => {
         try {
           const settings = await commands.getAppSettings();
           if (settings.status === "ok") {
-            setPosition(
-              settings.data.overlay_position === "top" ? "top" : "bottom",
-            );
+            // A dragged overlay hugs the edge it was dropped nearest to.
+            const edge =
+              settings.data.overlay_custom_anchor?.edge ??
+              settings.data.overlay_position;
+            setPosition(edge === "top" ? "top" : "bottom");
+            setCompact(settings.data.overlay_live_compact ?? false);
           }
         } catch {
           // Keep the previous/default placement if settings can't be read.
@@ -91,10 +98,28 @@ const RecordingOverlay: React.FC = () => {
 
       const unlistenHide = await listen("hide-overlay", () => {
         setIsVisible(false);
-        setCaptureReady(false);
+      });
+
+      // Shown again after being minimized: keep the session's text and timer.
+      const unlistenRestore = await listen<OverlayState>(
+        "overlay-restore",
+        (event) => {
+          setState(event.payload);
+          setIsVisible(true);
+        },
+      );
+
+      // Dragged to another edge, or switched between panel and pill.
+      const unlistenLayout = await listen<{
+        position: "top" | "bottom";
+        compact: boolean;
+      }>("overlay-layout", (event) => {
+        setPosition(event.payload.position === "top" ? "top" : "bottom");
+        setCompact(event.payload.compact);
       });
 
       const unlistenReady = await listen("recording-ready", () => {
+        captureStartRef.current = Date.now();
         setElapsed(0);
         setCaptureReady(true);
       });
@@ -124,6 +149,8 @@ const RecordingOverlay: React.FC = () => {
       return () => {
         unlistenShow();
         unlistenHide();
+        unlistenRestore();
+        unlistenLayout();
         unlistenReady();
         unlistenLevel();
         unlistenStream();
@@ -137,7 +164,11 @@ const RecordingOverlay: React.FC = () => {
   // Elapsed capture timer starts only once microphone samples are flowing.
   useEffect(() => {
     if (state !== "streaming" || !isVisible || !captureReady) return;
-    const id = setInterval(() => setElapsed((e) => e + 1), 1000);
+    // Measured from the capture start, so it is right again after a restore.
+    const tick = () =>
+      setElapsed(Math.floor((Date.now() - captureStartRef.current) / 1000));
+    tick();
+    const id = setInterval(tick, 1000);
     return () => clearInterval(id);
   }, [state, isVisible, captureReady]);
 
@@ -200,30 +231,94 @@ const RecordingOverlay: React.FC = () => {
     </button>
   );
 
-  // dot (left) | waveform (center) | timer + cancel (right) — same structure for
-  // pill & panel, so the Live morph is a pure width change.
-  const listeningRow = (showTimer: boolean, showCancel: boolean) => (
+  // Hide the overlay for the rest of the session; the tray can bring it back.
+  const minimizeBtn = (
+    <button
+      className="sx sx-small"
+      aria-label={t("overlay.minimize")}
+      title={t("overlay.minimize")}
+      onClick={() => commands.minimizeOverlay()}
+    >
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path
+          d="M4 8 L12 8"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+        />
+      </svg>
+    </button>
+  );
+
+  // Live only: switch between the text panel and the small pill.
+  const toggleBtn = (
+    <button
+      className="sx sx-small"
+      aria-label={compact ? t("overlay.expand") : t("overlay.collapse")}
+      title={compact ? t("overlay.expand") : t("overlay.collapse")}
+      onClick={() => commands.setOverlayLiveCompact(!compact)}
+    >
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path
+          d={
+            compact
+              ? "M9 3 L13 3 L13 7 M7 13 L3 13 L3 9"
+              : "M13 7 L9 7 L9 3 M3 9 L7 9 L7 13"
+          }
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          fill="none"
+        />
+      </svg>
+    </button>
+  );
+
+  const controls = (live: boolean) => (
+    <>
+      {live && toggleBtn}
+      {minimizeBtn}
+      {cancelBtn}
+    </>
+  );
+
+  // Press anywhere on the card except a button to drag the overlay around.
+  const handleCardMouseDown = (event: React.MouseEvent) => {
+    if (event.button !== 0) return;
+    if ((event.target as HTMLElement).closest("button")) return;
+    event.preventDefault();
+    commands.beginOverlayDrag();
+  };
+
+  const grip = <span className="sgrip" aria-hidden="true" />;
+
+  // grip + dot (left) | waveform (center) | timer + controls (right) — same
+  // structure for pill & panel, so the Live morph is a pure width change.
+  const listeningRow = (showTimer: boolean, live: boolean) => (
     <div className="sbase">
       <div className="sbase-l">
+        {grip}
         <span className={`sdot ${captureReady ? "ready" : "arming"}`} />
       </div>
       {waveform}
       <div className="sbase-r">
         {showTimer && <span className="stimer">{fmtTime(elapsed)}</span>}
-        {showCancel && cancelBtn}
+        {controls(live)}
       </div>
     </div>
   );
 
-  // spinner (left) | label (center) | cancel (right) — same 3-zone grid as the
-  // listening row, so the label is centered.
-  const workingRow = (label: string, showCancel: boolean) => (
+  // grip + spinner (left) | label (center) | controls (right) — same 3-zone
+  // grid as the listening row, so the label is centered.
+  const workingRow = (label: string, live: boolean) => (
     <div className="sbase">
       <div className="sbase-l">
+        {grip}
         <span className="sspinner" />
       </div>
       <span className="swork-label">{label}</span>
-      <div className="sbase-r">{showCancel && cancelBtn}</div>
+      <div className="sbase-r">{controls(live)}</div>
     </div>
   );
 
@@ -232,6 +327,27 @@ const RecordingOverlay: React.FC = () => {
     const hasText =
       streamText.committed.length > 0 || streamText.tentative.length > 0;
     const working = phase === "working";
+    const workLabel =
+      workKind === "polishing"
+        ? t("overlay.processing")
+        : t("overlay.transcribing");
+
+    // Collapsed by the user: a pill with the timer; text keeps arriving in the
+    // background and shows up again on expand.
+    if (compact) {
+      return (
+        <div dir={direction} className={`ov-stage ${position}`}>
+          <div
+            key={session}
+            className="scard live-mini"
+            onMouseDown={handleCardMouseDown}
+          >
+            {working ? workingRow(workLabel, true) : listeningRow(true, true)}
+          </div>
+        </div>
+      );
+    }
+
     // Keep the panel open whenever there's text — even while finalizing — so the
     // transcript stays put under a working spinner instead of collapsing and
     // squishing the text mid-stream. Only fall back to the small working pill
@@ -246,6 +362,7 @@ const RecordingOverlay: React.FC = () => {
           className={`scard ${open ? "open" : ""} ${collapsed ? "working" : ""} ${
             isVisible ? "" : "leaving"
           }`}
+          onMouseDown={handleCardMouseDown}
         >
           <div className="stext">
             <div className="stext-clip">
@@ -266,14 +383,7 @@ const RecordingOverlay: React.FC = () => {
               </div>
             </div>
           </div>
-          {working
-            ? workingRow(
-                workKind === "polishing"
-                  ? t("overlay.processing")
-                  : t("overlay.transcribing"),
-                true,
-              )
-            : listeningRow(open, true)}
+          {working ? workingRow(workLabel, true) : listeningRow(open, true)}
         </div>
       </div>
     );
@@ -295,8 +405,9 @@ const RecordingOverlay: React.FC = () => {
     >
       <div
         className={`scard compact ${working && isVisible ? "cworking" : ""}`}
+        onMouseDown={handleCardMouseDown}
       >
-        {working ? workingRow(workLabel, true) : listeningRow(false, true)}
+        {working ? workingRow(workLabel, false) : listeningRow(false, false)}
       </div>
     </div>
   );

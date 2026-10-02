@@ -660,6 +660,8 @@ pub fn change_overlay_position_setting(app: AppHandle, position: String) -> Resu
         }
     };
     settings.overlay_position = parsed;
+    // Picking an edge replaces any spot the overlay was dragged to.
+    settings.overlay_custom_anchor = None;
     settings::write_settings(&app, settings);
 
     // Whether the overlay shows at all is owned by overlay_style now; position

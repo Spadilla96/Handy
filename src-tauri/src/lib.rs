@@ -319,6 +319,9 @@ fn initialize_core_logic(app_handle: &AppHandle) {
                     Err(e) => log::error!("Failed to unload model via tray: {}", e),
                 }
             }
+            "show_overlay" => {
+                utils::restore_overlay(app);
+            }
             "cancel" => {
                 use crate::utils::cancel_current_operation;
 
@@ -764,6 +767,10 @@ pub fn run(cli_args: CliArgs) {
             commands::meeting::diarize_history_entry,
             commands::meeting::cancel_meeting_diarization,
             commands::meeting::get_diarization_job,
+            commands::overlay::begin_overlay_drag,
+            commands::overlay::minimize_overlay,
+            commands::overlay::set_overlay_live_compact,
+            commands::overlay::reset_overlay_position,
             commands::audio::get_available_output_devices,
             commands::audio::set_selected_output_device,
             commands::audio::get_selected_output_device,
@@ -1098,6 +1105,9 @@ pub fn run(cli_args: CliArgs) {
                     }
                     // No tray: keep the dock icon visible so the user can reopen
                 }
+            }
+            tauri::WindowEvent::Moved(_) if window.label() == "recording_overlay" => {
+                utils::handle_overlay_moved(window.app_handle());
             }
             tauri::WindowEvent::ThemeChanged(theme) => {
                 log::info!("Theme changed to: {:?}", theme);

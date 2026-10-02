@@ -1,7 +1,8 @@
 use crate::input;
 use crate::settings;
-use crate::settings::{OverlayPosition, OverlayStyle};
+use crate::settings::{OverlayAnchor, OverlayPosition, OverlayStyle};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize};
 
@@ -44,7 +45,7 @@ tauri_panel! {
 // scale (see windows_text_scale_factor), which WebView2 applies as a zoom.
 //
 // Compact overlay (Minimal / transcribing / processing): the 40h pill animates
-// width from 172 (--ov-rest-w) to 216 (--ov-work-w) and expands from center, so
+// width from 200 (--ov-rest-w) to 236 (--ov-work-w) and expands from center, so
 // the window must fit the widest state plus a little slack.
 const OVERLAY_WIDTH: f64 = 256.0;
 const OVERLAY_HEIGHT: f64 = 50.0;
@@ -53,13 +54,137 @@ const OVERLAY_HEIGHT: f64 = 50.0;
 const OVERLAY_STREAM_WIDTH: f64 = 400.0;
 const OVERLAY_STREAM_HEIGHT: f64 = 120.0;
 
-/// Overlay window size (logical) for a given UI state.
-fn overlay_dimensions(state: &str) -> (f64, f64) {
-    if state == "streaming" {
-        (OVERLAY_STREAM_WIDTH, OVERLAY_STREAM_HEIGHT)
-    } else {
-        (OVERLAY_WIDTH, OVERLAY_HEIGHT)
+// Live overlay collapsed to its pill (--ov-mini-w, 300): the timer plus the
+// expand / minimize / cancel buttons make it wider than the Minimal pill.
+const OVERLAY_STREAM_COMPACT_WIDTH: f64 = 320.0;
+
+/// Overlay window size (logical) for a given UI state. `live_compact` is the
+/// user's choice to show the Live overlay as a pill without the text panel.
+fn overlay_dimensions(state: &str, live_compact: bool) -> (f64, f64) {
+    match state {
+        "streaming" if live_compact => (OVERLAY_STREAM_COMPACT_WIDTH, OVERLAY_HEIGHT),
+        "streaming" => (OVERLAY_STREAM_WIDTH, OVERLAY_STREAM_HEIGHT),
+        _ => (OVERLAY_WIDTH, OVERLAY_HEIGHT),
     }
+}
+
+/// UI state last shown (`""` when no session is on screen), so a restore or a
+/// layout change can re-show the same state without resetting it.
+static OVERLAY_STATE: Mutex<String> = Mutex::new(String::new());
+/// The user minimized the overlay for the current session.
+static OVERLAY_MINIMIZED: AtomicBool = AtomicBool::new(false);
+/// A user drag is in progress; window moves while set update the anchor.
+/// Cleared whenever Handy places the window itself.
+static OVERLAY_DRAGGING: AtomicBool = AtomicBool::new(false);
+static OVERLAY_DRAG_MOVES: AtomicU64 = AtomicU64::new(0);
+/// Quiet time after the last move before a drag's position is saved.
+const DRAG_SETTLE_MS: u64 = 400;
+
+fn current_state() -> String {
+    OVERLAY_STATE.lock().map(|s| s.clone()).unwrap_or_default()
+}
+
+/// Window size for the state on screen, honoring the compact Live preference.
+fn current_dimensions(app_handle: &AppHandle) -> (f64, f64) {
+    let compact = settings::get_settings(app_handle).overlay_live_compact;
+    overlay_dimensions(&current_state(), compact)
+}
+
+/// The edge the card hugs: the dragged anchor's, else the configured one.
+fn effective_position(settings: &settings::AppSettings) -> OverlayPosition {
+    settings
+        .overlay_custom_anchor
+        .map(|anchor| anchor.edge)
+        .unwrap_or(settings.overlay_position)
+}
+
+/// Sent as `overlay-layout` so the overlay can restyle without being re-shown.
+#[derive(Clone, serde::Serialize)]
+struct OverlayLayout {
+    position: OverlayPosition,
+    compact: bool,
+}
+
+fn emit_layout(app_handle: &AppHandle) {
+    let settings = settings::get_settings(app_handle);
+    let _ = app_handle.emit_to(
+        "recording_overlay",
+        "overlay-layout",
+        OverlayLayout {
+            position: effective_position(&settings),
+            compact: settings.overlay_live_compact,
+        },
+    );
+}
+
+/// Window rectangle (physical pixels) that puts the overlay at `anchor`, kept
+/// inside the monitor. `content_scale` turns logical size into pixels.
+fn anchored_bounds(
+    monitor_position: PhysicalPosition<i32>,
+    monitor_size: PhysicalSize<u32>,
+    content_scale: f64,
+    logical_width: f64,
+    logical_height: f64,
+    anchor: OverlayAnchor,
+) -> (i32, i32, i32, i32) {
+    let width = (logical_width * content_scale).round().max(1.0) as i32;
+    let height = (logical_height * content_scale).round().max(1.0) as i32;
+    let left = monitor_position.x;
+    let top = monitor_position.y;
+    let right = left + monitor_size.width as i32;
+    let bottom = top + monitor_size.height as i32;
+    let x = (anchor.x - width / 2).clamp(left, (right - width).max(left));
+    let y = match anchor.edge {
+        OverlayPosition::Top => anchor.y,
+        OverlayPosition::Bottom => anchor.y - height,
+    };
+    let y = y.clamp(top, (bottom - height).max(top));
+    (x, y, width, height)
+}
+
+/// Anchor describing a window the user dropped at `position`: its horizontal
+/// center, and whichever edge faces the nearer screen edge.
+fn anchor_from_window(
+    position: PhysicalPosition<i32>,
+    size: PhysicalSize<u32>,
+    monitor_position: PhysicalPosition<i32>,
+    monitor_size: PhysicalSize<u32>,
+) -> OverlayAnchor {
+    let center_y = position.y + size.height as i32 / 2;
+    let monitor_mid_y = monitor_position.y + monitor_size.height as i32 / 2;
+    let x = position.x + size.width as i32 / 2;
+    if center_y < monitor_mid_y {
+        OverlayAnchor {
+            x,
+            y: position.y,
+            edge: OverlayPosition::Top,
+        }
+    } else {
+        OverlayAnchor {
+            x,
+            y: position.y + size.height as i32,
+            edge: OverlayPosition::Bottom,
+        }
+    }
+}
+
+/// Monitor containing a physical point (monitor bounds are physical pixels).
+fn monitor_at(app_handle: &AppHandle, x: i32, y: i32) -> Option<tauri::Monitor> {
+    app_handle
+        .available_monitors()
+        .ok()?
+        .into_iter()
+        .find(|m| is_mouse_within_monitor((x, y), m.position(), m.size()))
+}
+
+/// Monitor holding a saved anchor, or None if that screen is gone.
+fn anchor_monitor(app_handle: &AppHandle, anchor: OverlayAnchor) -> Option<tauri::Monitor> {
+    // A bottom anchor sits on the window's bottom edge, one past its last row.
+    let probe_y = match anchor.edge {
+        OverlayPosition::Top => anchor.y,
+        OverlayPosition::Bottom => anchor.y - 1,
+    };
+    monitor_at(app_handle, anchor.x, probe_y)
 }
 
 static LAST_MIC_LEVEL_EMIT: AtomicU64 = AtomicU64::new(0);
@@ -248,13 +373,29 @@ fn calculate_overlay_position(
     width: f64,
     height: f64,
 ) -> Option<(f64, f64)> {
+    let settings = settings::get_settings(app_handle);
+
+    // A dragged overlay returns to its spot on that monitor.
+    if let Some(anchor) = settings.overlay_custom_anchor {
+        if let Some(monitor) = anchor_monitor(app_handle, anchor) {
+            let scale = monitor.scale_factor();
+            let (x, y, _, _) = anchored_bounds(
+                *monitor.position(),
+                *monitor.size(),
+                scale,
+                width,
+                height,
+                anchor,
+            );
+            return Some((x as f64 / scale, y as f64 / scale));
+        }
+    }
+
     let monitor = get_monitor_with_cursor(app_handle)?;
     let scale = monitor.scale_factor();
     let monitor_x = monitor.position().x as f64 / scale;
     let monitor_y = monitor.position().y as f64 / scale;
     let monitor_width = monitor.size().width as f64 / scale;
-
-    let settings = settings::get_settings(app_handle);
 
     let x = monitor_x + (monitor_width - width) / 2.0;
     let y = match settings.overlay_position {
@@ -285,9 +426,6 @@ fn current_overlay_logical_size(window: &tauri::webview::WebviewWindow) -> Optio
     let scale = window.scale_factor().ok()?;
     Some((size.width as f64 / scale, size.height as f64 / scale))
 }
-
-#[cfg(target_os = "windows")]
-static WINDOWS_OVERLAY_IS_STREAMING: AtomicBool = AtomicBool::new(false);
 
 /// Windows accessibility text size (Settings > Accessibility > Text size), a
 /// separate axis from display scaling that WebView2 applies as a document zoom.
@@ -344,18 +482,41 @@ fn place_windows_overlay(
 ) -> Result<(), String> {
     use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER};
 
-    let monitor = get_monitor_with_cursor(app_handle)
-        .ok_or_else(|| "failed to determine the monitor containing the cursor".to_string())?;
+    let settings = settings::get_settings(app_handle);
     let text_scale = windows_text_scale_factor();
-    let (x, y, width, height) = windows_overlay_bounds(
-        *monitor.position(),
-        *monitor.size(),
-        monitor.scale_factor(),
-        text_scale,
-        logical_width,
-        logical_height,
-        settings::get_settings(app_handle).overlay_position,
-    );
+    // A dragged overlay returns to its spot; if that monitor is gone, fall
+    // back to the configured edge of the monitor under the cursor.
+    let anchored = settings
+        .overlay_custom_anchor
+        .and_then(|anchor| anchor_monitor(app_handle, anchor).map(|m| (anchor, m)));
+    let (monitor, (x, y, width, height)) = match anchored {
+        Some((anchor, monitor)) => {
+            let bounds = anchored_bounds(
+                *monitor.position(),
+                *monitor.size(),
+                monitor.scale_factor() * text_scale,
+                logical_width,
+                logical_height,
+                anchor,
+            );
+            (monitor, bounds)
+        }
+        None => {
+            let monitor = get_monitor_with_cursor(app_handle).ok_or_else(|| {
+                "failed to determine the monitor containing the cursor".to_string()
+            })?;
+            let bounds = windows_overlay_bounds(
+                *monitor.position(),
+                *monitor.size(),
+                monitor.scale_factor(),
+                text_scale,
+                logical_width,
+                logical_height,
+                settings.overlay_position,
+            );
+            (monitor, bounds)
+        }
+    };
     let hwnd = overlay_window
         .hwnd()
         .map_err(|error| format!("failed to get overlay window handle: {error}"))?;
@@ -493,6 +654,13 @@ fn show_overlay_state(app_handle: &AppHandle, state: &str) {
     if settings.overlay_style == OverlayStyle::None {
         return;
     }
+    if let Ok(mut current) = OVERLAY_STATE.lock() {
+        *current = state.to_string();
+    }
+    // Minimized for this session: remember the state for a restore, show nothing.
+    if OVERLAY_MINIMIZED.load(Ordering::SeqCst) {
+        return;
+    }
 
     // The rest queries monitors and the cursor and mutates window geometry. On
     // Linux the monitor/cursor lookups hit GDK/Xlib on the process's shared X11
@@ -504,12 +672,19 @@ fn show_overlay_state(app_handle: &AppHandle, state: &str) {
     // inline when already on the main thread, so this never deadlocks.
     let handle = app_handle.clone();
     let state = state.to_string();
-    let _ = app_handle.run_on_main_thread(move || show_overlay_state_on_main(&handle, &state));
+    let _ = app_handle
+        .run_on_main_thread(move || show_overlay_state_on_main(&handle, &state, true));
 }
 
-fn show_overlay_state_on_main(app_handle: &AppHandle, state: &str) {
+/// Size, place and show the overlay for `state`. `fresh` starts a new view
+/// (`show-overlay`, which resets the live text); otherwise the overlay comes
+/// back as it was (`overlay-restore`).
+fn show_overlay_state_on_main(app_handle: &AppHandle, state: &str, fresh: bool) {
     // Size the overlay for this state (compact vs. streaming), then position it.
-    let (width, height) = overlay_dimensions(state);
+    let (width, height) =
+        overlay_dimensions(state, settings::get_settings(app_handle).overlay_live_compact);
+    // Handy is moving the window now; that is not the user dragging it.
+    OVERLAY_DRAGGING.store(false, Ordering::SeqCst);
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
         // Invalidate any delayed hide still in flight from a previous session
         // (see `hide_recording_overlay`).
@@ -537,8 +712,6 @@ fn show_overlay_state_on_main(app_handle: &AppHandle, state: &str) {
             #[cfg(not(target_os = "windows"))]
             let _ =
                 overlay_window.set_size(tauri::Size::Logical(tauri::LogicalSize { width, height }));
-            #[cfg(target_os = "windows")]
-            WINDOWS_OVERLAY_IS_STREAMING.store(state == "streaming", Ordering::Relaxed);
             let size_elapsed = size_started.elapsed();
 
             let pos_started = std::time::Instant::now();
@@ -589,7 +762,12 @@ fn show_overlay_state_on_main(app_handle: &AppHandle, state: &str) {
             );
         }
 
-        let _ = overlay_window.emit("show-overlay", state);
+        let event = if fresh {
+            "show-overlay"
+        } else {
+            "overlay-restore"
+        };
+        let _ = overlay_window.emit(event, state);
     }
 }
 
@@ -650,14 +828,11 @@ fn update_overlay_position_on_main(app_handle: &AppHandle) {
             return;
         }
 
+        OVERLAY_DRAGGING.store(false, Ordering::SeqCst);
+
         #[cfg(target_os = "windows")]
         {
-            let state = if WINDOWS_OVERLAY_IS_STREAMING.load(Ordering::Relaxed) {
-                "streaming"
-            } else {
-                "recording"
-            };
-            let (width, height) = overlay_dimensions(state);
+            let (width, height) = current_dimensions(app_handle);
             if let Err(error) = place_windows_overlay(app_handle, &overlay_window, width, height) {
                 log::error!("Failed to update recording overlay position: {error}");
             }
@@ -665,10 +840,18 @@ fn update_overlay_position_on_main(app_handle: &AppHandle) {
 
         #[cfg(not(target_os = "windows"))]
         {
-            // Use the window's current size so centering stays correct whether the
-            // overlay is in compact or streaming layout.
-            let (width, height) = current_overlay_logical_size(&overlay_window)
-                .unwrap_or((OVERLAY_WIDTH, OVERLAY_HEIGHT));
+            // Size for the state on screen (it may have just switched between the
+            // Live panel and pill); otherwise keep the window's current size so
+            // centering stays correct.
+            let (width, height) = if current_state().is_empty() {
+                current_overlay_logical_size(&overlay_window)
+                    .unwrap_or((OVERLAY_WIDTH, OVERLAY_HEIGHT))
+            } else {
+                let (width, height) = current_dimensions(app_handle);
+                let _ = overlay_window
+                    .set_size(tauri::Size::Logical(tauri::LogicalSize { width, height }));
+                (width, height)
+            };
             if let Some((x, y)) = calculate_overlay_position(app_handle, width, height) {
                 let _ = overlay_window
                     .set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
@@ -685,8 +868,127 @@ fn update_overlay_position_on_main(app_handle: &AppHandle) {
 /// the instant it drained, well inside the 300 ms hide delay.
 static OVERLAY_SHOW_GENERATION: AtomicU64 = AtomicU64::new(0);
 
-/// Hides the recording overlay window with fade-out animation
+/// Hides the recording overlay window with fade-out animation. Ends the
+/// session's overlay: a minimized overlay is shown again next time.
 pub fn hide_recording_overlay(app_handle: &AppHandle) {
+    if let Ok(mut current) = OVERLAY_STATE.lock() {
+        current.clear();
+    }
+    OVERLAY_MINIMIZED.store(false, Ordering::SeqCst);
+    hide_overlay_window(app_handle);
+}
+
+/// Whether the user minimized the overlay of the session in progress.
+pub fn is_overlay_minimized() -> bool {
+    OVERLAY_MINIMIZED.load(Ordering::SeqCst)
+}
+
+/// Hide the overlay until the session ends; recording carries on.
+pub fn minimize_overlay(app_handle: &AppHandle) {
+    if current_state().is_empty() {
+        return;
+    }
+    OVERLAY_MINIMIZED.store(true, Ordering::SeqCst);
+    hide_overlay_window(app_handle);
+    crate::tray::update_tray_menu(app_handle);
+}
+
+/// Bring back a minimized overlay in the session's current state.
+pub fn restore_overlay(app_handle: &AppHandle) {
+    if !OVERLAY_MINIMIZED.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    crate::tray::update_tray_menu(app_handle);
+    let state = current_state();
+    if state.is_empty() || settings::get_settings(app_handle).overlay_style == OverlayStyle::None
+    {
+        return;
+    }
+    let handle = app_handle.clone();
+    let _ = app_handle
+        .run_on_main_thread(move || show_overlay_state_on_main(&handle, &state, false));
+}
+
+/// Switch the Live overlay between its text panel and the small pill.
+pub fn set_live_compact(app_handle: &AppHandle, compact: bool) {
+    let mut settings = settings::get_settings(app_handle);
+    settings.overlay_live_compact = compact;
+    settings::write_settings(app_handle, settings);
+    emit_layout(app_handle);
+    if !is_overlay_minimized() && current_state() == "streaming" {
+        update_overlay_position(app_handle);
+    }
+}
+
+/// Start a native window drag from the overlay (called on mouse-down). The
+/// spot is saved once the window stops moving; see `handle_overlay_moved`.
+pub fn begin_overlay_drag(app_handle: &AppHandle) {
+    if let Some(window) = app_handle.get_webview_window("recording_overlay") {
+        OVERLAY_DRAGGING.store(true, Ordering::SeqCst);
+        if let Err(error) = window.start_dragging() {
+            OVERLAY_DRAGGING.store(false, Ordering::SeqCst);
+            log::warn!("Failed to start dragging the overlay: {error}");
+        }
+    }
+}
+
+/// Window-moved hook for the overlay: during a user drag, save the new spot
+/// once it has been still for a moment.
+pub fn handle_overlay_moved(app_handle: &AppHandle) {
+    if !OVERLAY_DRAGGING.load(Ordering::SeqCst) {
+        return;
+    }
+    let generation = OVERLAY_DRAG_MOVES.fetch_add(1, Ordering::SeqCst) + 1;
+    let handle = app_handle.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(DRAG_SETTLE_MS));
+        if OVERLAY_DRAG_MOVES.load(Ordering::SeqCst) != generation
+            || !OVERLAY_DRAGGING.load(Ordering::SeqCst)
+        {
+            return;
+        }
+        save_dragged_anchor(&handle);
+    });
+}
+
+fn save_dragged_anchor(app_handle: &AppHandle) {
+    let Some(window) = app_handle.get_webview_window("recording_overlay") else {
+        return;
+    };
+    let (Ok(position), Ok(size)) = (window.outer_position(), window.outer_size()) else {
+        return;
+    };
+    let center = (
+        position.x + size.width as i32 / 2,
+        position.y + size.height as i32 / 2,
+    );
+    let Some(monitor) = monitor_at(app_handle, center.0, center.1)
+        .or_else(|| window.current_monitor().ok().flatten())
+    else {
+        return;
+    };
+    let anchor = anchor_from_window(position, size, *monitor.position(), *monitor.size());
+    let mut settings = settings::get_settings(app_handle);
+    if settings.overlay_custom_anchor == Some(anchor) {
+        return;
+    }
+    log::debug!("Overlay dragged to {anchor:?}");
+    settings.overlay_custom_anchor = Some(anchor);
+    settings::write_settings(app_handle, settings);
+    emit_layout(app_handle);
+}
+
+/// Forget the dragged spot and return to the configured top/bottom placement.
+pub fn reset_overlay_position(app_handle: &AppHandle) {
+    let mut settings = settings::get_settings(app_handle);
+    settings.overlay_custom_anchor = None;
+    settings::write_settings(app_handle, settings);
+    emit_layout(app_handle);
+    update_overlay_position(app_handle);
+}
+
+/// Fade the overlay out and unmap it, unless it is shown again meanwhile.
+fn hide_overlay_window(app_handle: &AppHandle) {
     // Always hide the overlay regardless of settings - if setting was changed while recording,
     // we still want to hide it properly
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
@@ -779,6 +1081,102 @@ mod tests {
         assert!(is_mouse_within_monitor((-1, 1239), &position, &size));
         assert!(!is_mouse_within_monitor((0, 0), &position, &size));
         assert!(!is_mouse_within_monitor((-1, 1240), &position, &size));
+    }
+
+    #[test]
+    fn live_compact_uses_the_pill_size() {
+        assert_eq!(
+            overlay_dimensions("streaming", false),
+            (OVERLAY_STREAM_WIDTH, OVERLAY_STREAM_HEIGHT)
+        );
+        assert_eq!(
+            overlay_dimensions("streaming", true),
+            (OVERLAY_STREAM_COMPACT_WIDTH, OVERLAY_HEIGHT)
+        );
+        // The preference only affects the Live overlay.
+        assert_eq!(
+            overlay_dimensions("recording", true),
+            (OVERLAY_WIDTH, OVERLAY_HEIGHT)
+        );
+    }
+
+    #[test]
+    fn dropped_window_anchors_to_the_nearer_edge() {
+        let monitor_position = PhysicalPosition::new(-1920, 0);
+        let monitor_size = PhysicalSize::new(1920, 1080);
+        let size = PhysicalSize::new(400, 120);
+
+        let top = anchor_from_window(
+            PhysicalPosition::new(-1500, 100),
+            size,
+            monitor_position,
+            monitor_size,
+        );
+        assert_eq!(
+            top,
+            OverlayAnchor {
+                x: -1300,
+                y: 100,
+                edge: OverlayPosition::Top
+            }
+        );
+
+        let bottom = anchor_from_window(
+            PhysicalPosition::new(-1500, 800),
+            size,
+            monitor_position,
+            monitor_size,
+        );
+        assert_eq!(
+            bottom,
+            OverlayAnchor {
+                x: -1300,
+                y: 920,
+                edge: OverlayPosition::Bottom
+            }
+        );
+    }
+
+    #[test]
+    fn anchored_bounds_grow_away_from_the_anchored_edge() {
+        let monitor_position = PhysicalPosition::new(0, 0);
+        let monitor_size = PhysicalSize::new(1920, 1080);
+        let anchor = OverlayAnchor {
+            x: 1000,
+            y: 900,
+            edge: OverlayPosition::Bottom,
+        };
+        // Pill and panel share the bottom edge and horizontal center.
+        let (x, y, w, h) =
+            anchored_bounds(monitor_position, monitor_size, 1.0, 256.0, 50.0, anchor);
+        assert_eq!((x, y, w, h), (872, 850, 256, 50));
+        let (x, y, w, h) =
+            anchored_bounds(monitor_position, monitor_size, 1.0, 400.0, 120.0, anchor);
+        assert_eq!((x, y, w, h), (800, 780, 400, 120));
+
+        let top = OverlayAnchor {
+            x: 1000,
+            y: 40,
+            edge: OverlayPosition::Top,
+        };
+        let (_, y, _, h) = anchored_bounds(monitor_position, monitor_size, 1.5, 400.0, 120.0, top);
+        assert_eq!((y, h), (40, 180));
+    }
+
+    #[test]
+    fn anchored_bounds_stay_on_screen() {
+        let monitor_position = PhysicalPosition::new(0, 0);
+        let monitor_size = PhysicalSize::new(1920, 1080);
+        // Anchored near the right edge: growing to the panel must not spill off.
+        let anchor = OverlayAnchor {
+            x: 1900,
+            y: 1080,
+            edge: OverlayPosition::Bottom,
+        };
+        let (x, y, w, h) =
+            anchored_bounds(monitor_position, monitor_size, 1.0, 400.0, 120.0, anchor);
+        assert_eq!((x, y), (1520, 960));
+        assert!(x + w <= 1920 && y + h <= 1080);
     }
 
     #[cfg(target_os = "windows")]
