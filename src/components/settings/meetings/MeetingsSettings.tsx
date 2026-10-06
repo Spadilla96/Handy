@@ -1,11 +1,15 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { ArrowLeft, Copy, Download, Loader2, Trash2, X } from "lucide-react";
 import { commands, type Meeting, type Utterance } from "@/bindings";
 import { SettingsGroup } from "../../ui/SettingsGroup";
 import { Button } from "../../ui/Button";
-import { AudioPlayer, AudioPlayerGroup } from "../../ui/AudioPlayer";
+import {
+  AudioPlayer,
+  AudioPlayerGroup,
+  type AudioPlayerHandle,
+} from "../../ui/AudioPlayer";
 import { copyToClipboard } from "../history/clipboard";
 import { useMeetingStore } from "../../../stores/meetingStore";
 
@@ -38,44 +42,98 @@ const speakerColor = (speaker: number) =>
     ? SPEAKER_COLORS[(speaker - 1) % SPEAKER_COLORS.length]
     : "text-mid-gray";
 
+// Accent for the utterance under the playhead, matching the speaker color.
+const SPEAKER_BORDERS = [
+  "border-sky-400",
+  "border-emerald-400",
+  "border-amber-400",
+  "border-fuchsia-400",
+  "border-rose-400",
+  "border-lime-400",
+  "border-cyan-400",
+  "border-orange-400",
+];
+const speakerBorder = (speaker: number) =>
+  speaker > 0
+    ? SPEAKER_BORDERS[(speaker - 1) % SPEAKER_BORDERS.length]
+    : "border-mid-gray";
+
+/** Start a touch early so the first syllable isn't clipped. */
+const SEEK_LEAD_SECS = 0.3;
+
 interface TranscriptProps {
   utterances: Utterance[];
   nameFor: (speaker: number) => string;
   onSpeakerClick?: (speaker: number) => void;
+  onSeek?: (seconds: number) => void;
+  /** Playhead position; the utterance containing it is highlighted. */
+  activeTime?: number | null;
 }
 
 const Transcript: React.FC<TranscriptProps> = ({
   utterances,
   nameFor,
   onSpeakerClick,
-}) => (
-  <div className="space-y-3">
-    {utterances.map((u, i) => (
-      <div
-        key={`${u.start}-${i}`}
-        className={u.provisional ? "opacity-60" : undefined}
-      >
-        <div className="flex items-baseline gap-2 text-xs">
-          <span className="text-mid-gray tabular-nums">
-            {formatTs(u.start)}
-          </span>
-          <button
-            type="button"
-            className={`font-semibold ${speakerColor(u.speaker)} ${
-              onSpeakerClick
-                ? "hover:underline cursor-pointer"
-                : "cursor-default"
-            }`}
-            onClick={() => onSpeakerClick?.(u.speaker)}
+  onSeek,
+  activeTime,
+}) => {
+  const { t } = useTranslation();
+  const seek = (start: number) => onSeek?.(Math.max(0, start - SEEK_LEAD_SECS));
+
+  return (
+    <div className="space-y-1">
+      {utterances.map((u, i) => {
+        const active =
+          activeTime != null && activeTime >= u.start && activeTime < u.end;
+        return (
+          <div
+            key={`${u.start}-${i}`}
+            className={`border-l-2 pl-2 py-1 rounded-r transition-colors ${
+              active
+                ? `${speakerBorder(u.speaker)} bg-mid-gray/10`
+                : "border-transparent"
+            } ${u.provisional ? "opacity-60" : ""}`}
           >
-            {nameFor(u.speaker)}
-          </button>
-        </div>
-        <p className="text-sm leading-relaxed">{u.text}</p>
-      </div>
-    ))}
-  </div>
-);
+            <div className="flex items-baseline gap-2 text-xs">
+              <button
+                type="button"
+                className="text-mid-gray tabular-nums hover:text-logo-primary hover:underline cursor-pointer"
+                title={t("meetings.detail.playFrom")}
+                onClick={() => seek(u.start)}
+              >
+                {formatTs(u.start)}
+              </button>
+              <button
+                type="button"
+                className={`font-semibold ${speakerColor(u.speaker)} ${
+                  onSpeakerClick
+                    ? "hover:underline cursor-pointer"
+                    : "cursor-default"
+                }`}
+                onClick={() => onSpeakerClick?.(u.speaker)}
+              >
+                {nameFor(u.speaker)}
+              </button>
+            </div>
+            <p
+              className={`text-sm leading-relaxed ${
+                onSeek ? "cursor-pointer hover:text-text" : ""
+              }`}
+              title={onSeek ? t("meetings.detail.playFrom") : undefined}
+              onClick={() => {
+                // Let the user select text to copy without jumping the audio.
+                if (window.getSelection()?.toString()) return;
+                seek(u.start);
+              }}
+            >
+              {u.text}
+            </p>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
 
 export const MeetingsSettings: React.FC = () => {
   const { t } = useTranslation();
@@ -97,6 +155,8 @@ export const MeetingsSettings: React.FC = () => {
     speaker: number;
     name: string;
   } | null>(null);
+  const playerRef = useRef<AudioPlayerHandle>(null);
+  const [playhead, setPlayhead] = useState<number | null>(null);
 
   const genericName = useCallback(
     (speaker: number) =>
@@ -230,7 +290,9 @@ export const MeetingsSettings: React.FC = () => {
         <div className="flex flex-wrap items-center gap-2">
           <AudioPlayerGroup>
             <AudioPlayer
+              ref={playerRef}
               onLoadRequest={loadAudio}
+              onTimeUpdate={setPlayhead}
               className="flex-1 min-w-48"
             />
           </AudioPlayerGroup>
@@ -280,6 +342,8 @@ export const MeetingsSettings: React.FC = () => {
         <Transcript
           utterances={selected.utterances}
           nameFor={names}
+          onSeek={(seconds) => playerRef.current?.seekTo(seconds)}
+          activeTime={playhead || null}
           onSpeakerClick={(speaker) =>
             setEditingSpeaker({
               speaker,

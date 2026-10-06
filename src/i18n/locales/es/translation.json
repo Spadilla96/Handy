@@ -757,7 +757,8 @@
     "detail": {
       "back": "Volver",
       "rename": "Renombrar",
-      "renameSpeakerHint": "Haz clic en el nombre de un hablante para renombrarlo.",
+      "renameSpeakerHint": "Haz clic en el nombre de un hablante para renombrarlo, o en su texto para escuchar ese momento de la grabación.",
+      "playFrom": "Reproducir desde aquí",
       "renameSpeakerPrompt": "Nombre para {{speaker}}",
       "copy": "Copiar",
       "copied": "Copiado",

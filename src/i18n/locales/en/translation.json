@@ -757,7 +757,8 @@
     "detail": {
       "back": "Back",
       "rename": "Rename",
-      "renameSpeakerHint": "Click a speaker name to rename them.",
+      "renameSpeakerHint": "Click a speaker name to rename them, or their text to hear that moment of the recording.",
+      "playFrom": "Play from here",
       "renameSpeakerPrompt": "Name for {{speaker}}",
       "copy": "Copy",
       "copied": "Copied",
