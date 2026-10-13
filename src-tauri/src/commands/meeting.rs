@@ -50,14 +50,28 @@ pub fn rename_meeting_speaker(
 
 #[tauri::command]
 #[specta::specta]
-pub fn rename_meeting(app: AppHandle, id: i64, title: String) -> Result<(), String> {
-    manager(&app).rename(id, &title).map_err(err_string)
+pub fn rename_meeting(app: AppHandle, id: i64, name: String) -> Result<(), String> {
+    manager(&app).rename(id, &name).map_err(err_string)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn delete_meeting(app: AppHandle, id: i64) -> Result<(), String> {
     manager(&app).delete(id).map_err(err_string)
+}
+
+/// Delete only the recording, keeping the transcript.
+#[tauri::command]
+#[specta::specta]
+pub fn delete_meeting_audio(app: AppHandle, id: i64) -> Result<(), String> {
+    manager(&app).delete_audio(id).map_err(err_string)
+}
+
+/// Exempt (or not) the recording from the 7-day automatic deletion.
+#[tauri::command]
+#[specta::specta]
+pub fn set_meeting_keep_audio(app: AppHandle, id: i64, keep: bool) -> Result<(), String> {
+    manager(&app).set_keep_audio(id, keep).map_err(err_string)
 }
 
 #[tauri::command]

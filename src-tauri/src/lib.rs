@@ -219,7 +219,9 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(history_manager.clone());
     match managers::meeting::MeetingManager::new(app_handle) {
         Ok(meeting_manager) => {
-            app_handle.manage(Arc::new(meeting_manager));
+            let meeting_manager = Arc::new(meeting_manager);
+            meeting_manager.start_audio_cleanup();
+            app_handle.manage(meeting_manager);
         }
         Err(e) => log::error!("Failed to initialize meeting manager: {e:#}"),
     }
@@ -761,6 +763,8 @@ pub fn run(cli_args: CliArgs) {
             commands::meeting::rename_meeting_speaker,
             commands::meeting::rename_meeting,
             commands::meeting::delete_meeting,
+            commands::meeting::delete_meeting_audio,
+            commands::meeting::set_meeting_keep_audio,
             commands::meeting::get_meeting_audio_path,
             commands::meeting::export_meeting_markdown,
             commands::meeting::save_meeting_markdown,

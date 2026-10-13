@@ -740,7 +740,7 @@
   },
   "meetings": {
     "title": "Meetings",
-    "description": "Meetings are recordings from your History turned into a transcript separated by speaker. They are kept until you delete them.",
+    "description": "Meetings are recordings from your History turned into a transcript separated by speaker. The transcript is kept until you delete it; the recording is deleted 7 days after processing unless you choose to keep it.",
     "speaker": "Speaker {{n}}",
     "unknownSpeaker": "Speaker ?",
     "models": {
@@ -752,12 +752,15 @@
     "list": {
       "title": "Saved meetings",
       "empty": "No meetings yet.",
-      "speakers": "{{count}} speakers"
+      "speakers": "{{count}} speakers",
+      "audioAvailable": "Recording available (deleted on {{date}})",
+      "audioKept": "Recording kept",
+      "audioDeleted": "Recording deleted"
     },
     "detail": {
       "back": "Back",
-      "rename": "Rename",
-      "renameSpeakerHint": "Click a speaker name to rename them, or their text to hear that moment of the recording.",
+      "rename": "Name this meeting",
+      "renameSpeakerHint": "Click a speaker above to hear their first words, the pencil or a name in the transcript to rename them, or any text to hear that moment.",
       "playFrom": "Play from here",
       "renameSpeakerPrompt": "Name for {{speaker}}",
       "copy": "Copy",
@@ -765,7 +768,20 @@
       "save": "Save .md",
       "saved": "Saved to {{path}}",
       "delete": "Delete",
-      "confirmDelete": "Delete this meeting and its recording?"
+      "confirmDelete": "Delete this meeting and its recording?",
+      "namePlaceholder": "Add a name…",
+      "renameSpeakerHintNoAudio": "Click a speaker above to find their first words, and the pencil or a name in the transcript to rename them.",
+      "speakers": "Speakers",
+      "jumpToSpeaker": "Go to their first appearance",
+      "renameSpeaker": "Rename speaker",
+      "turns_one": "{{count}} turn",
+      "turns_other": "{{count}} turns",
+      "keepAudio": "Keep recording",
+      "audioExpires": "The recording will be deleted on {{date}}",
+      "audioKept": "The recording will not be deleted automatically",
+      "deleteAudio": "Delete recording",
+      "confirmDeleteAudio": "Delete this meeting's recording? The transcript is kept.",
+      "audioDeleted": "Recording deleted — the transcript is kept"
     },
     "errors": {
       "modelsMissing": "Download the meeting models first (Handy → Meetings)."

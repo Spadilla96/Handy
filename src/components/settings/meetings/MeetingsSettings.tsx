@@ -1,7 +1,18 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { ArrowLeft, Copy, Download, Loader2, Trash2, X } from "lucide-react";
+import {
+  ArrowLeft,
+  Copy,
+  Download,
+  Loader2,
+  Lock,
+  Pencil,
+  Trash2,
+  Volume2,
+  VolumeX,
+  X,
+} from "lucide-react";
 import { commands, type Meeting, type Utterance } from "@/bindings";
 import { SettingsGroup } from "../../ui/SettingsGroup";
 import { Button } from "../../ui/Button";
@@ -25,6 +36,14 @@ const formatDate = (unix: number) =>
     dateStyle: "medium",
     timeStyle: "short",
   });
+
+/** The fixed "Reunión 2026-10-09 18:06" part of a meeting title. */
+const titlePrefix = (meeting: Meeting) =>
+  meeting.name && meeting.title.endsWith(` - ${meeting.name}`)
+    ? meeting.title.slice(0, -(meeting.name.length + 3))
+    : meeting.title;
+
+const utteranceDomId = (index: number) => `meeting-utterance-${index}`;
 
 // Stable, distinguishable colors per speaker id.
 const SPEAKER_COLORS = [
@@ -88,6 +107,7 @@ const Transcript: React.FC<TranscriptProps> = ({
         return (
           <div
             key={`${u.start}-${i}`}
+            id={utteranceDomId(i)}
             className={`border-l-2 pl-2 py-1 rounded-r transition-colors ${
               active
                 ? `${speakerBorder(u.speaker)} bg-mid-gray/10`
@@ -95,14 +115,20 @@ const Transcript: React.FC<TranscriptProps> = ({
             } ${u.provisional ? "opacity-60" : ""}`}
           >
             <div className="flex items-baseline gap-2 text-xs">
-              <button
-                type="button"
-                className="text-mid-gray tabular-nums hover:text-logo-primary hover:underline cursor-pointer"
-                title={t("meetings.detail.playFrom")}
-                onClick={() => seek(u.start)}
-              >
-                {formatTs(u.start)}
-              </button>
+              {onSeek ? (
+                <button
+                  type="button"
+                  className="text-mid-gray tabular-nums hover:text-logo-primary hover:underline cursor-pointer"
+                  title={t("meetings.detail.playFrom")}
+                  onClick={() => seek(u.start)}
+                >
+                  {formatTs(u.start)}
+                </button>
+              ) : (
+                <span className="text-mid-gray tabular-nums">
+                  {formatTs(u.start)}
+                </span>
+              )}
               <button
                 type="button"
                 className={`font-semibold ${speakerColor(u.speaker)} ${
@@ -122,7 +148,7 @@ const Transcript: React.FC<TranscriptProps> = ({
               title={onSeek ? t("meetings.detail.playFrom") : undefined}
               onClick={() => {
                 // Let the user select text to copy without jumping the audio.
-                if (window.getSelection()?.toString()) return;
+                if (!onSeek || window.getSelection()?.toString()) return;
                 seek(u.start);
               }}
             >
@@ -131,6 +157,79 @@ const Transcript: React.FC<TranscriptProps> = ({
           </div>
         );
       })}
+    </div>
+  );
+};
+
+interface SpeakerGridProps {
+  utterances: Utterance[];
+  nameFor: (speaker: number) => string;
+  /** Jump to a speaker's first utterance (its index and start time). */
+  onJump: (index: number, start: number) => void;
+  onRename: (speaker: number) => void;
+}
+
+/** One chip per detected speaker, to find and hear each voice quickly. */
+const SpeakerGrid: React.FC<SpeakerGridProps> = ({
+  utterances,
+  nameFor,
+  onJump,
+  onRename,
+}) => {
+  const { t } = useTranslation();
+  const speakers = new Map<number, { index: number; turns: number }>();
+  utterances.forEach((u, index) => {
+    const seen = speakers.get(u.speaker);
+    if (seen) seen.turns += 1;
+    else speakers.set(u.speaker, { index, turns: 1 });
+  });
+  // Known speakers by id; the unknown speaker (0) last.
+  const sorted = [...speakers.entries()].sort(([a], [b]) =>
+    a === 0 ? 1 : b === 0 ? -1 : a - b,
+  );
+  if (sorted.length === 0) return null;
+
+  return (
+    <div className="space-y-2">
+      <p className="text-xs font-medium text-mid-gray uppercase tracking-wide">
+        {t("meetings.detail.speakers")}
+      </p>
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(10rem,1fr))] gap-2">
+        {sorted.map(([speaker, { index, turns }]) => {
+          const start = utterances[index].start;
+          return (
+            <div
+              key={speaker}
+              className={`flex items-center rounded border border-mid-gray/20 border-l-2 hover:bg-mid-gray/10 ${speakerBorder(speaker)}`}
+            >
+              <button
+                type="button"
+                className="flex-1 min-w-0 text-left px-2 py-1.5"
+                title={t("meetings.detail.jumpToSpeaker")}
+                onClick={() => onJump(index, start)}
+              >
+                <span
+                  className={`block text-sm font-semibold truncate ${speakerColor(speaker)}`}
+                >
+                  {nameFor(speaker)}
+                </span>
+                <span className="block text-xs text-mid-gray tabular-nums">
+                  {formatTs(start)} ·{" "}
+                  {t("meetings.detail.turns", { count: turns })}
+                </span>
+              </button>
+              <button
+                type="button"
+                className="p-2 text-mid-gray hover:text-logo-primary"
+                title={t("meetings.detail.renameSpeaker")}
+                onClick={() => onRename(speaker)}
+              >
+                <Pencil size={13} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 };
@@ -200,7 +299,7 @@ export const MeetingsSettings: React.FC = () => {
 
   const saveTitle = async () => {
     if (!selected || editingTitle === null) return;
-    const res = await commands.renameMeeting(selected.id, editingTitle);
+    const res = await commands.renameMeeting(selected.id, editingTitle.trim());
     setEditingTitle(null);
     if (res.status === "error") setError(res.error);
     openMeeting(selected.id);
@@ -235,6 +334,42 @@ export const MeetingsSettings: React.FC = () => {
     refreshList();
   };
 
+  const setKeepAudio = async (keep: boolean) => {
+    if (!selected) return;
+    const res = await commands.setMeetingKeepAudio(selected.id, keep);
+    if (res.status === "error") setError(res.error);
+    openMeeting(selected.id);
+    refreshList();
+  };
+
+  const deleteAudio = async () => {
+    if (!selected || !window.confirm(t("meetings.detail.confirmDeleteAudio"))) {
+      return;
+    }
+    const res = await commands.deleteMeetingAudio(selected.id);
+    if (res.status === "error") setError(res.error);
+    setPlayhead(null);
+    openMeeting(selected.id);
+    refreshList();
+  };
+
+  const startRenameSpeaker = (speaker: number) => {
+    if (!selected) return;
+    setEditingSpeaker({
+      speaker,
+      name: selected.speaker_names[String(speaker)] ?? "",
+    });
+  };
+
+  const jumpTo = (index: number, start: number) => {
+    document
+      .getElementById(utteranceDomId(index))
+      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (selected?.audio_available) {
+      playerRef.current?.seekTo(Math.max(0, start - SEEK_LEAD_SECS));
+    }
+  };
+
   const loadAudio = async () => {
     if (!selected) return null;
     const res = await commands.getMeetingAudioPath(selected.id);
@@ -263,39 +398,52 @@ export const MeetingsSettings: React.FC = () => {
           </span>
         </Button>
         <div className="space-y-1">
-          {editingTitle !== null ? (
-            <input
-              autoFocus
-              className="w-full bg-transparent border-b border-mid-gray/40 text-lg font-semibold focus:outline-none"
-              value={editingTitle}
-              onChange={(e) => setEditingTitle(e.target.value)}
-              onBlur={saveTitle}
-              onKeyDown={(e) => e.key === "Enter" && saveTitle()}
-            />
-          ) : (
-            <button
-              type="button"
-              className="text-lg font-semibold hover:underline text-left"
-              title={t("meetings.detail.rename")}
-              onClick={() => setEditingTitle(selected.title)}
-            >
-              {selected.title}
-            </button>
-          )}
+          <div className="flex items-baseline gap-2 text-lg font-semibold">
+            <span className="shrink-0">{titlePrefix(selected)} -</span>
+            {editingTitle !== null ? (
+              <input
+                autoFocus
+                className="flex-1 min-w-0 bg-transparent border-b border-mid-gray/40 focus:outline-none"
+                placeholder={t("meetings.detail.namePlaceholder")}
+                value={editingTitle}
+                onChange={(e) => setEditingTitle(e.target.value)}
+                onBlur={saveTitle}
+                onKeyDown={(e) => e.key === "Enter" && saveTitle()}
+              />
+            ) : (
+              <button
+                type="button"
+                className={`min-w-0 text-left hover:underline ${
+                  selected.name ? "" : "text-mid-gray font-normal italic"
+                }`}
+                title={t("meetings.detail.rename")}
+                onClick={() => setEditingTitle(selected.name)}
+              >
+                {selected.name || t("meetings.detail.namePlaceholder")}
+              </button>
+            )}
+          </div>
           <p className="text-xs text-mid-gray">
             {formatDate(selected.started_at)} ·{" "}
             {formatTs(selected.ended_at - selected.started_at)}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <AudioPlayerGroup>
-            <AudioPlayer
-              ref={playerRef}
-              onLoadRequest={loadAudio}
-              onTimeUpdate={setPlayhead}
-              className="flex-1 min-w-48"
-            />
-          </AudioPlayerGroup>
+          {selected.audio_available ? (
+            <AudioPlayerGroup>
+              <AudioPlayer
+                ref={playerRef}
+                onLoadRequest={loadAudio}
+                onTimeUpdate={setPlayhead}
+                className="flex-1 min-w-48"
+              />
+            </AudioPlayerGroup>
+          ) : (
+            <p className="flex-1 min-w-48 inline-flex items-center gap-2 text-sm text-mid-gray">
+              <VolumeX size={14} />
+              {t("meetings.detail.audioDeleted")}
+            </p>
+          )}
           <Button variant="secondary" size="sm" onClick={copyMeeting}>
             <span className="inline-flex items-center gap-1">
               <Copy size={14} />
@@ -308,6 +456,14 @@ export const MeetingsSettings: React.FC = () => {
               {t("meetings.detail.save")}
             </span>
           </Button>
+          {selected.audio_available && (
+            <Button variant="danger-ghost" size="sm" onClick={deleteAudio}>
+              <span className="inline-flex items-center gap-1">
+                <VolumeX size={14} />
+                {t("meetings.detail.deleteAudio")}
+              </span>
+            </Button>
+          )}
           <Button variant="danger-ghost" size="sm" onClick={deleteMeeting}>
             <span className="inline-flex items-center gap-1">
               <Trash2 size={14} />
@@ -315,10 +471,38 @@ export const MeetingsSettings: React.FC = () => {
             </span>
           </Button>
         </div>
+        {selected.audio_available && (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+            <label className="inline-flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                className="accent-logo-primary"
+                checked={selected.keep_audio}
+                onChange={(e) => setKeepAudio(e.target.checked)}
+              />
+              {t("meetings.detail.keepAudio")}
+            </label>
+            <span className="text-mid-gray">
+              {selected.audio_expires_at != null
+                ? t("meetings.detail.audioExpires", {
+                    date: formatDate(selected.audio_expires_at),
+                  })
+                : t("meetings.detail.audioKept")}
+            </span>
+          </div>
+        )}
         {notice && <p className="text-xs text-mid-gray">{notice}</p>}
         {error && <p className="text-xs text-red-400">{error}</p>}
+        <SpeakerGrid
+          utterances={selected.utterances}
+          nameFor={names}
+          onJump={jumpTo}
+          onRename={startRenameSpeaker}
+        />
         <p className="text-xs text-mid-gray">
-          {t("meetings.detail.renameSpeakerHint")}
+          {selected.audio_available
+            ? t("meetings.detail.renameSpeakerHint")
+            : t("meetings.detail.renameSpeakerHintNoAudio")}
         </p>
         {editingSpeaker && (
           <div className="flex items-center gap-2">
@@ -342,14 +526,13 @@ export const MeetingsSettings: React.FC = () => {
         <Transcript
           utterances={selected.utterances}
           nameFor={names}
-          onSeek={(seconds) => playerRef.current?.seekTo(seconds)}
-          activeTime={playhead || null}
-          onSpeakerClick={(speaker) =>
-            setEditingSpeaker({
-              speaker,
-              name: selected.speaker_names[String(speaker)] ?? "",
-            })
+          onSeek={
+            selected.audio_available
+              ? (seconds) => playerRef.current?.seekTo(seconds)
+              : undefined
           }
+          activeTime={playhead || null}
+          onSpeakerClick={startRenameSpeaker}
         />
       </div>
     );
@@ -426,9 +609,31 @@ export const MeetingsSettings: React.FC = () => {
             >
               <div className="flex items-baseline justify-between gap-2">
                 <span className="text-sm font-medium">{m.title}</span>
-                <span className="text-xs text-mid-gray">
+                <span className="inline-flex items-center gap-2 shrink-0 text-xs text-mid-gray">
                   {formatTs(m.ended_at - m.started_at)} ·{" "}
                   {t("meetings.list.speakers", { count: m.speaker_count })}
+                  {!m.audio_available ? (
+                    <span title={t("meetings.list.audioDeleted")}>
+                      <VolumeX size={14} className="text-mid-gray/60" />
+                    </span>
+                  ) : m.keep_audio ? (
+                    <span
+                      className="inline-flex items-center text-logo-primary"
+                      title={t("meetings.list.audioKept")}
+                    >
+                      <Volume2 size={14} />
+                      <Lock size={10} />
+                    </span>
+                  ) : (
+                    <span
+                      className="text-logo-primary"
+                      title={t("meetings.list.audioAvailable", {
+                        date: formatDate(m.audio_expires_at ?? m.started_at),
+                      })}
+                    >
+                      <Volume2 size={14} />
+                    </span>
+                  )}
                 </span>
               </div>
               <p className="text-xs text-mid-gray truncate">{m.preview}</p>

@@ -810,9 +810,9 @@ async renameMeetingSpeaker(id: number, speaker: number, name: string) : Promise<
     else return { status: "error", error: e  as any };
 }
 },
-async renameMeeting(id: number, title: string) : Promise<Result<null, string>> {
+async renameMeeting(id: number, name: string) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("rename_meeting", { id, title }) };
+    return { status: "ok", data: await TAURI_INVOKE("rename_meeting", { id, name }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -821,6 +821,22 @@ async renameMeeting(id: number, title: string) : Promise<Result<null, string>> {
 async deleteMeeting(id: number) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("delete_meeting", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async deleteMeetingAudio(id: number) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_meeting_audio", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setMeetingKeepAudio(id: number, keep: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_meeting_keep_audio", { id, keep }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1302,11 +1318,11 @@ export type TranscribeAcceleratorSetting = "auto" | "cpu" | "gpu"
 export type TypingTool = "auto" | "wtype" | "kwtype" | "dotool" | "ydotool" | "xdotool"
 export type Utterance = { speaker: number; start: number; end: number; text: string; provisional?: boolean }
 export type MeetingModelsStatus = { ready: boolean; downloading: boolean; downloaded: number; total: number }
-export type MeetingSummary = { id: number; started_at: number; ended_at: number; title: string; speaker_count: number; preview: string; source_history_id: number | null }
+export type MeetingSummary = { id: number; started_at: number; ended_at: number; title: string; name: string; speaker_count: number; preview: string; source_history_id: number | null; keep_audio: boolean; audio_available: boolean; audio_expires_at: number | null }
 export type DiarizationJob = { history_id: number; progress: number; backend: string | null }
 export type MeetingSavedEvent = { history_id: number; meeting_id: number }
 export type DiarizeFailedEvent = { history_id: number; message: string; cancelled: boolean }
-export type Meeting = { id: number; started_at: number; ended_at: number; title: string; file_name: string; utterances: Utterance[]; speaker_names: Partial<{ [key in string]: string }> }
+export type Meeting = { id: number; started_at: number; ended_at: number; title: string; name: string; file_name: string; utterances: Utterance[]; speaker_names: Partial<{ [key in string]: string }>; keep_audio: boolean; audio_available: boolean; audio_expires_at: number | null }
 export type AudioSource = "microphone" | "system" | "microphone_and_system"
 export type VadBackend = "silero" | "earshot"
 export type WindowsMicrophonePermissionStatus = { supported: boolean; overall_access: PermissionAccess; device_access: PermissionAccess; app_access: PermissionAccess; desktop_app_access: PermissionAccess }

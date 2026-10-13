@@ -68,16 +68,27 @@ pub struct Utterance {
     pub provisional: bool,
 }
 
+/// How long a meeting keeps its recording after diarization, unless it is
+/// marked to keep it.
+const AUDIO_RETENTION_SECS: i64 = 7 * 24 * 3600;
+
 #[derive(Clone, Debug, Serialize, Type)]
 pub struct MeetingSummary {
     pub id: i64,
     pub started_at: i64,
     pub ended_at: i64,
+    /// Date prefix plus the user's name, e.g. "Reunión 2026-10-09 18:06 - Diana".
     pub title: String,
+    /// The user part of the title; empty if never named.
+    pub name: String,
     pub speaker_count: u32,
     pub preview: String,
     /// History entry this meeting was created from, if any.
     pub source_history_id: Option<i64>,
+    pub keep_audio: bool,
+    pub audio_available: bool,
+    /// When the recording will be deleted automatically, if it will.
+    pub audio_expires_at: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize, Type)]
@@ -86,10 +97,14 @@ pub struct Meeting {
     pub started_at: i64,
     pub ended_at: i64,
     pub title: String,
+    pub name: String,
     pub file_name: String,
     pub utterances: Vec<Utterance>,
     /// Speaker id (as a string) -> display name.
     pub speaker_names: HashMap<String, String>,
+    pub keep_audio: bool,
+    pub audio_available: bool,
+    pub audio_expires_at: Option<i64>,
 }
 
 // ---- Diarization job ------------------------------------------------------------
@@ -169,33 +184,76 @@ impl MeetingManager {
                 speaker_names_json TEXT NOT NULL DEFAULT '{}'
             );",
         )?;
-        let has_source: bool = conn
-            .prepare("SELECT 1 FROM pragma_table_info('meetings') WHERE name = 'source_history_id'")?
-            .exists([])?;
-        if !has_source {
+        if !has_column(&conn, "source_history_id")? {
             conn.execute_batch("ALTER TABLE meetings ADD COLUMN source_history_id INTEGER;")?;
         }
+        if !has_column(&conn, "name")? {
+            conn.execute_batch("ALTER TABLE meetings ADD COLUMN name TEXT NOT NULL DEFAULT '';")?;
+            // Recover the user part of titles renamed before names existed.
+            let rows: Vec<(i64, i64, String)> = conn
+                .prepare("SELECT id, started_at, title FROM meetings")?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            for (id, started_at, title) in rows {
+                let name = name_from_legacy_title(started_at, &title);
+                if !name.is_empty() {
+                    conn.execute(
+                        "UPDATE meetings SET name = ?1 WHERE id = ?2",
+                        params![name, id],
+                    )?;
+                }
+            }
+        }
+        if !has_column(&conn, "keep_audio")? {
+            conn.execute_batch(
+                "ALTER TABLE meetings ADD COLUMN keep_audio INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+        if !has_column(&conn, "diarized_at")? {
+            // Meetings that predate retention get their full grace period
+            // from the moment this version first runs.
+            conn.execute_batch("ALTER TABLE meetings ADD COLUMN diarized_at INTEGER;")?;
+            conn.execute(
+                "UPDATE meetings SET diarized_at = ?1",
+                params![chrono::Utc::now().timestamp()],
+            )?;
+        }
         Ok(())
+    }
+
+    fn audio_available(&self, file_name: &str) -> bool {
+        !file_name.is_empty() && self.recordings_dir().join(file_name).exists()
     }
 
     pub fn list(&self) -> Result<Vec<MeetingSummary>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, started_at, ended_at, title, utterances_json, source_history_id FROM meetings ORDER BY started_at DESC",
+            "SELECT id, started_at, ended_at, name, utterances_json, source_history_id, file_name, keep_audio, diarized_at FROM meetings ORDER BY started_at DESC",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, Option<i64>>(5)?,
+                (
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, Option<i64>>(5)?,
+                ),
+                (
+                    r.get::<_, String>(6)?,
+                    r.get::<_, bool>(7)?,
+                    r.get::<_, Option<i64>>(8)?,
+                ),
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (id, started_at, ended_at, title, json, source_history_id) = row?;
+            let (
+                (id, started_at, ended_at, name, json, source_history_id),
+                (file_name, keep_audio, diarized_at),
+            ) = row?;
+            let audio_available = self.audio_available(&file_name);
             let utterances: Vec<Utterance> = serde_json::from_str(&json).unwrap_or_default();
             let mut speakers: Vec<i32> = utterances.iter().map(|u| u.speaker).collect();
             speakers.sort_unstable();
@@ -212,10 +270,14 @@ impl MeetingManager {
                 id,
                 started_at,
                 ended_at,
-                title,
+                title: compose_title(started_at, &name),
+                name,
                 speaker_count: speakers.len() as u32,
                 preview,
                 source_history_id,
+                keep_audio,
+                audio_available,
+                audio_expires_at: audio_expires_at(diarized_at, keep_audio, audio_available),
             });
         }
         Ok(out)
@@ -223,26 +285,44 @@ impl MeetingManager {
 
     pub fn get(&self, id: i64) -> Result<Meeting> {
         let conn = self.conn()?;
-        let (started_at, ended_at, title, file_name, utt, names): (
+        let (started_at, ended_at, name, file_name, utt, names, keep_audio, diarized_at): (
             i64,
             i64,
             String,
             String,
             String,
             String,
+            bool,
+            Option<i64>,
         ) = conn.query_row(
-            "SELECT started_at, ended_at, title, file_name, utterances_json, speaker_names_json FROM meetings WHERE id = ?1",
+            "SELECT started_at, ended_at, name, file_name, utterances_json, speaker_names_json, keep_audio, diarized_at FROM meetings WHERE id = ?1",
             params![id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                ))
+            },
         )?;
+        let audio_available = self.audio_available(&file_name);
         Ok(Meeting {
             id,
             started_at,
             ended_at,
-            title,
+            title: compose_title(started_at, &name),
+            name,
             file_name,
             utterances: serde_json::from_str(&utt).unwrap_or_default(),
             speaker_names: serde_json::from_str(&names).unwrap_or_default(),
+            keep_audio,
+            audio_available,
+            audio_expires_at: audio_expires_at(diarized_at, keep_audio, audio_available),
         })
     }
 
@@ -261,27 +341,103 @@ impl MeetingManager {
         Ok(())
     }
 
-    pub fn rename(&self, id: i64, title: &str) -> Result<()> {
+    /// Set the user part of the title; the date prefix always stays.
+    pub fn rename(&self, id: i64, name: &str) -> Result<()> {
+        let started_at: i64 = self.conn()?.query_row(
+            "SELECT started_at FROM meetings WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )?;
+        let name = name.trim();
         self.conn()?.execute(
-            "UPDATE meetings SET title = ?1 WHERE id = ?2",
-            params![title.trim(), id],
+            "UPDATE meetings SET name = ?1, title = ?2 WHERE id = ?3",
+            params![name, compose_title(started_at, name), id],
         )?;
         Ok(())
     }
 
     pub fn delete(&self, id: i64) -> Result<()> {
-        let meeting = self.get(id)?;
+        if let Err(e) = self.delete_audio(id) {
+            warn!("Could not delete the recording of meeting #{id}: {e:#}");
+        }
         self.conn()?
             .execute("DELETE FROM meetings WHERE id = ?1", params![id])?;
-        let path = self.recordings_dir().join(&meeting.file_name);
-        if path.exists() {
-            let _ = std::fs::remove_file(path);
-        }
         Ok(())
     }
 
+    /// Exempt a meeting's recording from automatic deletion, or not.
+    pub fn set_keep_audio(&self, id: i64, keep: bool) -> Result<()> {
+        self.conn()?.execute(
+            "UPDATE meetings SET keep_audio = ?1 WHERE id = ?2",
+            params![keep, id],
+        )?;
+        Ok(())
+    }
+
+    /// Remove a meeting's recording but keep its transcript.
+    pub fn delete_audio(&self, id: i64) -> Result<()> {
+        let file_name: String = self.conn()?.query_row(
+            "SELECT file_name FROM meetings WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )?;
+        if !file_name.is_empty() {
+            let path = self.recordings_dir().join(&file_name);
+            if path.exists() {
+                std::fs::remove_file(&path)
+                    .with_context(|| format!("deleting {}", path.display()))?;
+            }
+        }
+        self.conn()?.execute(
+            "UPDATE meetings SET file_name = '' WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
+    }
+
+    /// Delete recordings whose retention period has run out, unless the
+    /// meeting is marked to keep its audio. Returns how many were removed.
+    pub fn cleanup_expired_audio(&self) -> Result<usize> {
+        let now = chrono::Utc::now().timestamp();
+        let ids: Vec<i64> = self
+            .conn()?
+            .prepare(
+                "SELECT id FROM meetings WHERE keep_audio = 0 AND file_name != '' AND diarized_at IS NOT NULL AND diarized_at <= ?1",
+            )?
+            .query_map(params![now - AUDIO_RETENTION_SECS], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut removed = 0;
+        for id in ids {
+            match self.delete_audio(id) {
+                Ok(()) => removed += 1,
+                Err(e) => warn!("Could not delete expired audio of meeting #{id}: {e:#}"),
+            }
+        }
+        if removed > 0 {
+            info!("Deleted the recordings of {removed} meeting(s) past their retention period");
+            let _ = self.app.emit("meeting-audio-cleaned", removed);
+        }
+        Ok(removed)
+    }
+
+    /// Run `cleanup_expired_audio` now and then every hour; Handy usually
+    /// stays in the tray for days.
+    pub fn start_audio_cleanup(self: &Arc<Self>) {
+        let manager = self.clone();
+        std::thread::spawn(move || loop {
+            if let Err(e) = manager.cleanup_expired_audio() {
+                error!("Meeting audio cleanup failed: {e:#}");
+            }
+            std::thread::sleep(Duration::from_secs(3600));
+        });
+    }
+
     pub fn audio_path(&self, id: i64) -> Result<PathBuf> {
-        Ok(self.recordings_dir().join(self.get(id)?.file_name))
+        let meeting = self.get(id)?;
+        if !meeting.audio_available {
+            bail!("The recording of this meeting was deleted");
+        }
+        Ok(self.recordings_dir().join(meeting.file_name))
     }
 
     /// Markdown export with speaker names applied.
@@ -643,13 +799,7 @@ impl MeetingManager {
         utterances: Vec<Utterance>,
     ) -> Result<i64> {
         let started_at = entry.timestamp;
-        let title = chrono::DateTime::from_timestamp(started_at, 0)
-            .map(|t| {
-                t.with_timezone(&chrono::Local)
-                    .format("Reunión %Y-%m-%d %H:%M")
-                    .to_string()
-            })
-            .unwrap_or_else(|| "Reunión".to_string());
+        let title = base_title(started_at);
         let utterances: Vec<Utterance> = utterances
             .into_iter()
             .map(|mut u| {
@@ -659,18 +809,66 @@ impl MeetingManager {
             .collect();
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO meetings (started_at, ended_at, title, file_name, utterances_json, source_history_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO meetings (started_at, ended_at, title, file_name, utterances_json, source_history_id, diarized_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 started_at,
                 started_at + duration.round() as i64,
                 title,
                 file_name,
                 serde_json::to_string(&utterances)?,
-                entry.id
+                entry.id,
+                chrono::Utc::now().timestamp()
             ],
         )?;
         Ok(conn.last_insert_rowid())
     }
+}
+
+fn has_column(conn: &Connection, column: &str) -> Result<bool> {
+    Ok(conn
+        .prepare("SELECT 1 FROM pragma_table_info('meetings') WHERE name = ?1")?
+        .exists(params![column])?)
+}
+
+/// The fixed part of a meeting title: "Reunión 2026-10-09 18:06".
+fn base_title(started_at: i64) -> String {
+    chrono::DateTime::from_timestamp(started_at, 0)
+        .map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("Reunión %Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|| "Reunión".to_string())
+}
+
+fn compose_title(started_at: i64, name: &str) -> String {
+    let base = base_title(started_at);
+    let name = name.trim();
+    if name.is_empty() {
+        base
+    } else {
+        format!("{base} - {name}")
+    }
+}
+
+/// The user part of a title stored before names had their own column.
+fn name_from_legacy_title(started_at: i64, title: &str) -> String {
+    let base = base_title(started_at);
+    let title = title.trim();
+    if title == base {
+        String::new()
+    } else if let Some(rest) = title.strip_prefix(&format!("{base} - ")) {
+        rest.trim().to_string()
+    } else {
+        title.to_string()
+    }
+}
+
+fn audio_expires_at(diarized_at: Option<i64>, keep: bool, available: bool) -> Option<i64> {
+    if keep || !available {
+        return None;
+    }
+    diarized_at.map(|t| t + AUDIO_RETENTION_SECS)
 }
 
 fn wav_duration_secs(path: &Path) -> Result<f64> {
@@ -770,5 +968,31 @@ mod tests {
         assert_eq!(speaker_label(&names, 3), "Hablante 3");
         assert_eq!(format_ts(75.4), "01:15");
         assert_eq!(format_ts(3725.0), "1:02:05");
+    }
+
+    #[test]
+    fn titles_keep_the_date_prefix() {
+        let t = 1_760_000_000;
+        let base = base_title(t);
+        assert!(base.starts_with("Reunión 20"));
+        assert_eq!(compose_title(t, "  "), base);
+        assert_eq!(compose_title(t, " Diana "), format!("{base} - Diana"));
+        assert_eq!(name_from_legacy_title(t, &base), "");
+        assert_eq!(
+            name_from_legacy_title(t, &format!("{base} - Diana")),
+            "Diana"
+        );
+        assert_eq!(name_from_legacy_title(t, "Sprint review"), "Sprint review");
+    }
+
+    #[test]
+    fn audio_expiry() {
+        assert_eq!(
+            audio_expires_at(Some(100), false, true),
+            Some(100 + AUDIO_RETENTION_SECS)
+        );
+        assert_eq!(audio_expires_at(Some(100), true, true), None);
+        assert_eq!(audio_expires_at(Some(100), false, false), None);
+        assert_eq!(audio_expires_at(None, false, true), None);
     }
 }

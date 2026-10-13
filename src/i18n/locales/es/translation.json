@@ -740,7 +740,7 @@
   },
   "meetings": {
     "title": "Reuniones",
-    "description": "Las reuniones son grabaciones del Historial convertidas en una transcripción separada por hablante. Se conservan hasta que las elimines.",
+    "description": "Las reuniones son grabaciones del Historial convertidas en una transcripción separada por hablante. La transcripción se conserva hasta que la elimines; la grabación se elimina 7 días después de procesarla, salvo que marques conservarla.",
     "speaker": "Hablante {{n}}",
     "unknownSpeaker": "Hablante ?",
     "models": {
@@ -752,12 +752,15 @@
     "list": {
       "title": "Reuniones guardadas",
       "empty": "Todavía no hay reuniones.",
-      "speakers": "{{count}} hablantes"
+      "speakers": "{{count}} hablantes",
+      "audioAvailable": "Grabación disponible (se elimina el {{date}})",
+      "audioKept": "Grabación conservada",
+      "audioDeleted": "Grabación eliminada"
     },
     "detail": {
       "back": "Volver",
-      "rename": "Renombrar",
-      "renameSpeakerHint": "Haz clic en el nombre de un hablante para renombrarlo, o en su texto para escuchar ese momento de la grabación.",
+      "rename": "Nombrar esta reunión",
+      "renameSpeakerHint": "Haz clic en un hablante de arriba para escuchar sus primeras palabras, en el lápiz o en su nombre en la transcripción para renombrarlo, o en cualquier texto para escuchar ese momento.",
       "playFrom": "Reproducir desde aquí",
       "renameSpeakerPrompt": "Nombre para {{speaker}}",
       "copy": "Copiar",
@@ -765,7 +768,20 @@
       "save": "Guardar .md",
       "saved": "Guardado en {{path}}",
       "delete": "Eliminar",
-      "confirmDelete": "¿Eliminar esta reunión y su grabación?"
+      "confirmDelete": "¿Eliminar esta reunión y su grabación?",
+      "namePlaceholder": "Añadir un nombre…",
+      "renameSpeakerHintNoAudio": "Haz clic en un hablante de arriba para ir a sus primeras palabras, y en el lápiz o en su nombre en la transcripción para renombrarlo.",
+      "speakers": "Hablantes",
+      "jumpToSpeaker": "Ir a su primera aparición",
+      "renameSpeaker": "Renombrar hablante",
+      "turns_one": "{{count}} intervención",
+      "turns_other": "{{count}} intervenciones",
+      "keepAudio": "Conservar grabación",
+      "audioExpires": "La grabación se eliminará el {{date}}",
+      "audioKept": "La grabación no se eliminará automáticamente",
+      "deleteAudio": "Eliminar grabación",
+      "confirmDeleteAudio": "¿Eliminar la grabación de esta reunión? La transcripción se conserva.",
+      "audioDeleted": "Grabación eliminada — la transcripción se conserva"
     },
     "errors": {
       "modelsMissing": "Primero descarga los modelos de reuniones (Handy → Reuniones)."

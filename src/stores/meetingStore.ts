@@ -72,6 +72,8 @@ export const useMeetingStore = create<MeetingStore>()((set, get) => ({
         },
       });
     });
+    // Recordings past their retention period were deleted in the background.
+    listen("meeting-audio-cleaned", () => get().refreshMeetings());
     listen<DiarizeFailedEvent>("meeting-diarize-failed", (event) => {
       set({ job: null });
       if (!event.payload.cancelled) {
