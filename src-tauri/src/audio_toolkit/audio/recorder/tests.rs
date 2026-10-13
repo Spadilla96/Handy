@@ -1,7 +1,8 @@
 use super::{
-    is_microphone_access_denied, is_no_input_device_error, run_consumer, AudioRecorder,
-    CaptureProcessor, CaptureTransportState, ChunkDisposition, Cmd, SecondaryMix, VadConfig,
-    VadPolicy,
+    is_microphone_access_denied, is_no_input_device_error, primary_stalled, run_consumer,
+    should_switch, AudioRecorder, CaptureProcessor, CaptureTransportState, ChunkDisposition, Cmd,
+    SecondaryMix, Suspensions, VadConfig, VadPolicy, PRIMARY_STALL_TIMEOUT, SUSPEND_INITIAL,
+    SUSPEND_MAX,
 };
 use crate::audio_toolkit::vad::{VadFrame, VoiceActivityDetector};
 use rtrb::RingBuffer;
@@ -92,6 +93,7 @@ fn shutdown_is_processed_without_audio_samples() {
             cmd_rx,
             Arc::new(CaptureTransportState::default()),
             Arc::new(AtomicBool::new(false)),
+            None,
         );
         let _ = done_tx.send(());
     });
@@ -261,6 +263,7 @@ fn repeated_start_stop_cycles_resume_capture_without_leaking_samples() {
             cmd_rx,
             consumer_transport,
             Arc::new(AtomicBool::new(false)),
+            None,
         );
     });
 
@@ -368,6 +371,7 @@ fn missing_callback_at_stop_marks_stream_for_rebuild_and_returns_samples() {
             cmd_rx,
             worker_transport,
             stream_error,
+            None,
         );
     });
 
@@ -437,4 +441,124 @@ fn secondary_mix_pads_gaps_with_zeros_and_bounds_backlog() {
     // Buffered audio is summed in and the result stays within [-1, 1].
     let mixed = mix.mix(&[0.75, 0.0]).to_vec();
     assert_eq!(mixed, vec![1.0, 0.5]);
+}
+
+#[test]
+fn rebinding_the_primary_keeps_the_recording_and_follows_the_new_rate() {
+    let mut processor = CaptureProcessor::new(48_000, None, None, None, Instant::now());
+    let (ready_tx, _ready_rx) = mpsc::channel();
+    processor.begin_recording(VadPolicy::Disabled, ready_tx);
+
+    // 100 ms on a 48 kHz headset, then the same on a 16 kHz fallback mic.
+    processor.process_raw_chunk(&[0.5; 4_800], ChunkDisposition::Capture);
+    processor.rebind_primary(16_000);
+    assert_eq!(processor.in_sample_rate, 16_000);
+    processor.process_raw_chunk(&[0.5; 1_600], ChunkDisposition::Capture);
+
+    // Both halves survive at 16 kHz, give or take resampler delay and
+    // frame padding.
+    let samples = processor.finish_recording();
+    assert!(
+        (3_200..=3_200 + 4 * 480).contains(&samples.len()),
+        "unexpected sample count {}",
+        samples.len()
+    );
+}
+
+#[test]
+fn rebinding_the_primary_rebuilds_the_secondary_mix_for_the_new_rate() {
+    let mut processor = CaptureProcessor::new(48_000, None, None, None, Instant::now());
+    processor.enable_secondary(44_100);
+    processor.rebind_primary(16_000);
+    let mix = processor.secondary.as_ref().expect("secondary mix kept");
+    assert_eq!(mix.in_rate, 44_100);
+    assert_eq!(mix.max_buf, 3_200);
+}
+
+#[test]
+fn stop_after_a_stream_error_returns_without_waiting_for_the_callback() {
+    let (_producer, consumer) = RingBuffer::<f32>::new(16_000);
+    let stream_error = Arc::new(AtomicBool::new(true));
+    let (cmd_tx, cmd_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        run_consumer(
+            CaptureProcessor::new(16_000, None, None, None, Instant::now()),
+            consumer,
+            None,
+            false,
+            cmd_rx,
+            Arc::new(CaptureTransportState::default()),
+            stream_error,
+            None,
+        );
+    });
+
+    let (ready_tx, _ready_rx) = mpsc::channel();
+    cmd_tx
+        .send(Cmd::Start(VadPolicy::Disabled, Instant::now(), ready_tx))
+        .expect("start");
+    let (reply_tx, reply_rx) = mpsc::channel();
+    let stopped_at = Instant::now();
+    cmd_tx.send(Cmd::Stop(reply_tx)).expect("stop");
+    reply_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("stop reply");
+    assert!(stopped_at.elapsed() < Duration::from_secs(1));
+    worker.join().expect("consumer exits");
+}
+
+#[test]
+fn only_a_real_microphone_counts_as_stalled() {
+    let start = Instant::now();
+    let later = start + PRIMARY_STALL_TIMEOUT + Duration::from_millis(1);
+    assert!(!primary_stalled(start, start, false));
+    assert!(primary_stalled(start, later, false));
+    // Loopback is silent whenever nothing plays.
+    assert!(!primary_stalled(start, later, true));
+}
+
+#[test]
+fn switches_on_failure_or_back_to_the_preferred_device() {
+    // Dead stream: take whatever is available, even a stand-in.
+    assert!(should_switch(true, "Headset", Some("Built-in"), false));
+    // Nothing to switch to.
+    assert!(!should_switch(true, "Headset", None, true));
+    // Healthy stand-in, preferred headset is back.
+    assert!(should_switch(false, "Built-in", Some("Headset"), true));
+    // Healthy and already on the resolved device.
+    assert!(!should_switch(false, "Headset", Some("Headset"), true));
+    // Healthy stand-in, preferred still missing: stay put.
+    assert!(!should_switch(false, "Built-in", Some("Speakers"), false));
+}
+
+#[test]
+fn failed_devices_are_skipped_with_a_growing_back_off() {
+    let mut suspended = Suspensions::default();
+    let start = Instant::now();
+    suspended.suspend("Headset", start);
+    assert_eq!(suspended.active(start), vec!["Headset".to_string()]);
+
+    // A repeat report while still suspended does not extend it.
+    suspended.suspend("Headset", start + Duration::from_secs(1));
+    let expired = start + SUSPEND_INITIAL + Duration::from_millis(1);
+    assert!(suspended.active(expired).is_empty());
+
+    // Failing again after coming back doubles the wait, up to the cap.
+    suspended.suspend("Headset", expired);
+    assert!(!suspended.active(expired + SUSPEND_INITIAL).is_empty());
+    assert!(suspended
+        .active(expired + SUSPEND_INITIAL * 2 + Duration::from_millis(1))
+        .is_empty());
+    let mut at = expired;
+    for _ in 0..10 {
+        at += SUSPEND_MAX + Duration::from_millis(1);
+        suspended.suspend("Headset", at);
+    }
+    assert!(suspended
+        .active(at + SUSPEND_MAX + Duration::from_millis(1))
+        .is_empty());
+
+    // Unnamed devices are never tracked.
+    suspended.suspend("", start);
+    assert_eq!(suspended.0.len(), 1);
 }

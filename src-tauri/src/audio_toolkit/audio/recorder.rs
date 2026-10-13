@@ -86,6 +86,21 @@ impl VadConfig {
 pub type AudioFrameCallback = Arc<dyn Fn(&[f32]) + Send + Sync + 'static>;
 pub type LevelCallback = Arc<dyn Fn(Vec<f32>) + Send + Sync + 'static>;
 
+/// The devices capture should use right now, freshly resolved from settings.
+/// Consulted mid-recording when a device disappears (e.g. a Bluetooth headset
+/// handing itself over to a phone call) and to move back once it returns.
+pub struct ResolvedDevices {
+    pub primary: Option<Device>,
+    /// False when `primary` is a stand-in for an unavailable preferred device.
+    pub primary_is_preferred: bool,
+    pub secondary: Option<Device>,
+    pub secondary_is_preferred: bool,
+}
+
+/// Called with the names of devices that just failed, which should be
+/// skipped while any alternative exists.
+pub type DeviceResolver = Arc<dyn Fn(&[String]) -> ResolvedDevices + Send + Sync + 'static>;
+
 pub struct AudioRecorder {
     device: Option<Device>,
     cmd_tx: Option<mpsc::Sender<Cmd>>,
@@ -104,6 +119,12 @@ pub struct AudioRecorder {
     config_cache: Arc<Mutex<Option<(String, cpal::SupportedStreamConfig)>>>,
     /// Set by cpal when the active input stream can no longer capture.
     stream_error: Arc<AtomicBool>,
+    /// Same, for the secondary (mixed-in) stream.
+    secondary_error: Arc<AtomicBool>,
+    /// Set while a mid-recording switch left capture on a stand-in device, so
+    /// the next start re-resolves the user's preferred one.
+    on_fallback: Arc<AtomicBool>,
+    resolver: Option<DeviceResolver>,
 }
 
 impl AudioRecorder {
@@ -118,7 +139,20 @@ impl AudioRecorder {
             selected_channel: None,
             config_cache: Arc::new(Mutex::new(None)),
             stream_error: Arc::new(AtomicBool::new(false)),
+            secondary_error: Arc::new(AtomicBool::new(false)),
+            on_fallback: Arc::new(AtomicBool::new(false)),
+            resolver: None,
         })
+    }
+
+    /// Let the recorder replace a vanished device mid-recording instead of
+    /// capturing silence until the next start.
+    pub fn with_device_resolver<F>(mut self, resolver: F) -> Self
+    where
+        F: Fn(&[String]) -> ResolvedDevices + Send + Sync + 'static,
+    {
+        self.resolver = Some(Arc::new(resolver));
+        self
     }
 
     /// Attach a single VAD engine, reconfigured per session for the offline vs
@@ -190,6 +224,8 @@ impl AudioRecorder {
         }
 
         self.stream_error.store(false, Ordering::Relaxed);
+        self.secondary_error.store(false, Ordering::Relaxed);
+        self.on_fallback.store(false, Ordering::Relaxed);
 
         let (cmd_tx, cmd_rx) = mpsc::channel::<Cmd>();
         let (init_tx, init_rx) = mpsc::sync_channel::<Result<(), String>>(1);
@@ -211,6 +247,9 @@ impl AudioRecorder {
         let selected_channel = self.selected_channel;
         let config_cache = Arc::clone(&self.config_cache);
         let stream_error = Arc::clone(&self.stream_error);
+        let secondary_error = Arc::clone(&self.secondary_error);
+        let on_fallback = Arc::clone(&self.on_fallback);
+        let resolver = self.resolver.clone();
 
         let worker = std::thread::spawn(move || {
             let transport = Arc::new(CaptureTransportState::default());
@@ -297,17 +336,14 @@ impl AudioRecorder {
                 let secondary_stream = match &secondary {
                     Some(device) => Some(AudioRecorder::open_secondary_stream(
                         device,
-                        Arc::clone(&stream_error),
+                        Arc::clone(&secondary_error),
                     )?),
                     None => None,
                 };
 
                 // A render device captured in loopback delivers no callbacks
                 // while nothing is playing, so pausing it cannot be acknowledged.
-                #[cfg(target_os = "windows")]
-                let primary_is_loopback = thread_device.default_input_config().is_err();
-                #[cfg(not(target_os = "windows"))]
-                let primary_is_loopback = false;
+                let primary_is_loopback = is_loopback_device(&thread_device);
 
                 Ok((
                     stream,
@@ -338,6 +374,34 @@ impl AudioRecorder {
                         }
                         None => (None, None),
                     };
+                    // With a resolver the streams move into the reconnector,
+                    // which may replace them mid-recording.
+                    let mut keepalive = Some((stream, secondary_keepalive));
+                    let reconnector = resolver.map(|resolver| {
+                        let (stream, secondary_stream) =
+                            keepalive.take().expect("streams not yet moved");
+                        Reconnector {
+                            resolver,
+                            selected_channel,
+                            primary_error: Arc::clone(&stream_error),
+                            secondary_error,
+                            on_fallback,
+                            primary_name: thread_device.name().unwrap_or_default(),
+                            secondary_name: secondary
+                                .as_ref()
+                                .map(|d| d.name().unwrap_or_default()),
+                            primary_stream: Some(stream),
+                            secondary_stream,
+                            primary_on_preferred: true,
+                            secondary_on_preferred: true,
+                            last_primary_audio: Instant::now(),
+                            last_check: Instant::now(),
+                            last_probe: Instant::now(),
+                            last_attempt: None,
+                            failure_logged: false,
+                            suspended: Suspensions::default(),
+                        }
+                    });
                     run_consumer(
                         processor,
                         sample_consumer,
@@ -346,9 +410,9 @@ impl AudioRecorder {
                         cmd_rx,
                         transport,
                         Arc::clone(&stream_error),
+                        reconnector,
                     );
-                    drop(secondary_keepalive);
-                    drop(stream);
+                    drop(keepalive);
                 }
                 Err(error_message) => {
                     // A failed open may mean the cached config went stale
@@ -419,6 +483,8 @@ impl AudioRecorder {
     /// callback channel, so also honor the error callback's explicit flag.
     pub fn needs_reopen(&self) -> bool {
         self.stream_error.load(Ordering::Relaxed)
+            || self.secondary_error.load(Ordering::Relaxed)
+            || self.on_fallback.load(Ordering::Relaxed)
             || self
                 .worker_handle
                 .as_ref()
@@ -724,6 +790,19 @@ impl AudioRecorder {
     }
 }
 
+/// A render device opened for capture is recorded in WASAPI loopback mode.
+fn is_loopback_device(device: &Device) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        device.default_input_config().is_err()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = device;
+        false
+    }
+}
+
 fn acknowledge_pause_after_write(transport: &CaptureTransportState) {
     if transport.pause_requested.load(Ordering::Acquire) {
         transport.pause_acknowledged.store(true, Ordering::Release);
@@ -826,6 +905,9 @@ const SECONDARY_MAX_BACKLOG: Duration = Duration::from_millis(200);
 /// Secondary audio resampled to the primary rate, waiting to be summed into
 /// primary chunks. Gaps (a silent loopback stream) are mixed in as zeros.
 struct SecondaryMix {
+    /// Rate the secondary device delivers, kept so the mix can be rebuilt
+    /// when the primary switches to a device with another rate.
+    in_rate: u32,
     resampler: FrameResampler,
     buf: VecDeque<f32>,
     max_buf: usize,
@@ -835,6 +917,7 @@ struct SecondaryMix {
 impl SecondaryMix {
     fn new(secondary_rate: u32, primary_rate: u32) -> Self {
         Self {
+            in_rate: secondary_rate,
             resampler: FrameResampler::new(
                 secondary_rate as usize,
                 primary_rate as usize,
@@ -903,6 +986,34 @@ impl CaptureProcessor {
         audio_cb: Option<AudioFrameCallback>,
         stream_running_at: Instant,
     ) -> Self {
+        let (frame_resampler, visualizer, max_drain_samples) =
+            Self::rate_scoped_state(in_sample_rate, &vad);
+
+        Self {
+            in_sample_rate,
+            vad,
+            level_cb,
+            audio_cb,
+            stream_running_at,
+            visualizer,
+            frame_resampler,
+            max_drain_samples,
+            first_chunk_logged: false,
+            secondary: None,
+            vad_policy: VadPolicy::Offline,
+            processed_samples: Vec::new(),
+            awaiting_first_captured_chunk: None,
+            capture_ready_tx: None,
+            total_dropped_samples: 0,
+            overrun_warning_logged: false,
+        }
+    }
+
+    /// The parts of the pipeline that depend on the input stream's rate.
+    fn rate_scoped_state(
+        in_sample_rate: u32,
+        vad: &Option<VadConfig>,
+    ) -> (FrameResampler, AudioVisualiser, usize) {
         // Resample into frames sized for the active VAD backend (30 ms when
         // no detector is attached) so the detector never sees a partial frame.
         let frame_samples = vad.as_ref().map_or(
@@ -928,28 +1039,36 @@ impl CaptureProcessor {
         let max_drain_samples =
             ((in_sample_rate as u128 * MAX_DRAIN_CHUNK.as_millis()) / 1_000).max(1) as usize;
 
-        Self {
-            in_sample_rate,
-            vad,
-            level_cb,
-            audio_cb,
-            stream_running_at,
-            visualizer,
-            frame_resampler,
-            max_drain_samples,
-            first_chunk_logged: false,
-            secondary: None,
-            vad_policy: VadPolicy::Offline,
-            processed_samples: Vec::new(),
-            awaiting_first_captured_chunk: None,
-            capture_ready_tx: None,
-            total_dropped_samples: 0,
-            overrun_warning_logged: false,
-        }
+        (frame_resampler, visualizer, max_drain_samples)
     }
 
     fn enable_secondary(&mut self, secondary_rate: u32) {
         self.secondary = Some(SecondaryMix::new(secondary_rate, self.in_sample_rate));
+    }
+
+    /// Continue the current recording on a replacement primary stream running
+    /// at `sample_rate`. Audio already buffered in the resampler is flushed
+    /// into the recording first; VAD state and captured samples are kept.
+    fn rebind_primary(&mut self, sample_rate: u32) {
+        let vad_policy = self.vad_policy;
+        self.frame_resampler.finish(|frame: &[f32]| {
+            handle_frame(
+                frame,
+                vad_policy,
+                &self.vad,
+                &self.audio_cb,
+                &mut self.processed_samples,
+            )
+        });
+        let (frame_resampler, visualizer, max_drain_samples) =
+            Self::rate_scoped_state(sample_rate, &self.vad);
+        self.frame_resampler = frame_resampler;
+        self.visualizer = visualizer;
+        self.max_drain_samples = max_drain_samples;
+        self.in_sample_rate = sample_rate;
+        if let Some(secondary_rate) = self.secondary.as_ref().map(|mix| mix.in_rate) {
+            self.enable_secondary(secondary_rate);
+        }
     }
 
     /// Drain the secondary ring. While recording its audio is queued for
@@ -1131,18 +1250,328 @@ fn drain_mixed(
     processor.drain(primary, disposition)
 }
 
+/// How often an active recording checks that its devices still deliver audio.
+const HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(250);
+/// A microphone delivers callbacks even in silence, so this long without any
+/// means the device went away without cpal reporting an error.
+const PRIMARY_STALL_TIMEOUT: Duration = Duration::from_secs(3);
+/// Minimum spacing between attempts to replace a failed device.
+const RECONNECT_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+/// How often a recording looks for its preferred device (or a new default).
+const PREFERRED_PROBE_INTERVAL: Duration = Duration::from_secs(3);
+/// How long a device that failed mid-recording is skipped, doubling on each
+/// repeat failure, so a headset that stays listed while busy with a phone
+/// call is not retried in a tight loop.
+const SUSPEND_INITIAL: Duration = Duration::from_secs(15);
+const SUSPEND_MAX: Duration = Duration::from_secs(120);
+
+/// Devices that failed mid-recording: `(name, skipped until, back-off)`.
+#[derive(Default)]
+struct Suspensions(Vec<(String, Instant, Duration)>);
+
+impl Suspensions {
+    fn suspend(&mut self, name: &str, now: Instant) {
+        if name.is_empty() {
+            return;
+        }
+        match self.0.iter_mut().find(|(n, ..)| n == name) {
+            Some((_, until, backoff)) => {
+                if *until > now {
+                    return;
+                }
+                *backoff = (*backoff * 2).min(SUSPEND_MAX);
+                *until = now + *backoff;
+            }
+            None => self.0.push((name.to_string(), now + SUSPEND_INITIAL, SUSPEND_INITIAL)),
+        }
+    }
+
+    fn active(&self, now: Instant) -> Vec<String> {
+        self.0
+            .iter()
+            .filter(|(_, until, _)| *until > now)
+            .map(|(name, ..)| name.clone())
+            .collect()
+    }
+}
+
+/// A loopback stream is legitimately silent while nothing plays; only a real
+/// input device is expected to keep delivering samples.
+fn primary_stalled(last_audio: Instant, now: Instant, is_loopback: bool) -> bool {
+    !is_loopback && now.saturating_duration_since(last_audio) > PRIMARY_STALL_TIMEOUT
+}
+
+/// Move capture to the `resolved` device when the current stream is dead, or
+/// when it is the preferred device (or a changed default) and not the
+/// current one — e.g. a headset coming back after a phone call.
+fn should_switch(
+    dead: bool,
+    current: &str,
+    resolved: Option<&str>,
+    resolved_is_preferred: bool,
+) -> bool {
+    match resolved {
+        None => false,
+        Some(name) => dead || (resolved_is_preferred && name != current),
+    }
+}
+
+/// Keeps an active recording alive across device changes. Owns the capture
+/// streams so it can replace a vanished one without ending the recording.
+struct Reconnector {
+    resolver: DeviceResolver,
+    selected_channel: Option<usize>,
+    primary_error: Arc<AtomicBool>,
+    secondary_error: Arc<AtomicBool>,
+    on_fallback: Arc<AtomicBool>,
+    primary_name: String,
+    /// `None` when no secondary stream is mixed in.
+    secondary_name: Option<String>,
+    primary_stream: Option<cpal::Stream>,
+    secondary_stream: Option<cpal::Stream>,
+    primary_on_preferred: bool,
+    secondary_on_preferred: bool,
+    last_primary_audio: Instant,
+    last_check: Instant,
+    last_probe: Instant,
+    last_attempt: Option<Instant>,
+    failure_logged: bool,
+    suspended: Suspensions,
+}
+
+impl Reconnector {
+    fn recording_started(&mut self) {
+        let now = Instant::now();
+        self.last_primary_audio = now;
+        self.last_probe = now;
+        self.last_attempt = None;
+    }
+
+    fn primary_audio_arrived(&mut self) {
+        self.last_primary_audio = Instant::now();
+    }
+
+    /// Check the streams of an active recording and replace any that died,
+    /// or move back to the preferred device once it is available again.
+    fn maintain(
+        &mut self,
+        processor: &mut CaptureProcessor,
+        primary: &mut Consumer<f32>,
+        secondary: &mut Option<Consumer<f32>>,
+        transport: &Arc<CaptureTransportState>,
+        primary_is_loopback: &mut bool,
+    ) {
+        let now = Instant::now();
+        if now.saturating_duration_since(self.last_check) < HEALTH_CHECK_INTERVAL {
+            return;
+        }
+        self.last_check = now;
+
+        let primary_dead = self.primary_stream.is_none()
+            || self.primary_error.load(Ordering::Acquire)
+            || primary_stalled(self.last_primary_audio, now, *primary_is_loopback);
+        let secondary_dead = self.secondary_name.is_some()
+            && (self.secondary_stream.is_none() || self.secondary_error.load(Ordering::Acquire));
+        let failed = primary_dead || secondary_dead;
+        let retry_due = self
+            .last_attempt
+            .is_none_or(|at| now.saturating_duration_since(at) >= RECONNECT_RETRY_INTERVAL);
+        let probe_due = now.saturating_duration_since(self.last_probe) >= PREFERRED_PROBE_INTERVAL;
+        if !(failed && retry_due) && !probe_due {
+            return;
+        }
+        self.last_probe = now;
+        if failed {
+            self.last_attempt = Some(now);
+        }
+        if primary_dead {
+            self.suspended.suspend(&self.primary_name, now);
+        }
+        if secondary_dead {
+            if let Some(name) = &self.secondary_name {
+                self.suspended.suspend(name, now);
+            }
+        }
+
+        let resolved = (self.resolver)(&self.suspended.active(now));
+        let mut still_failed = false;
+
+        let primary_name = resolved
+            .primary
+            .as_ref()
+            .map(|d| d.name().unwrap_or_default());
+        if should_switch(
+            primary_dead,
+            &self.primary_name,
+            primary_name.as_deref(),
+            resolved.primary_is_preferred,
+        ) {
+            if let Some(device) = resolved.primary {
+                if !self.switch_primary(
+                    device,
+                    resolved.primary_is_preferred,
+                    processor,
+                    primary,
+                    secondary,
+                    transport,
+                    primary_is_loopback,
+                ) {
+                    still_failed |= primary_dead;
+                }
+            }
+        } else {
+            still_failed |= primary_dead;
+        }
+
+        if let Some(current) = self.secondary_name.clone() {
+            let secondary_name = resolved
+                .secondary
+                .as_ref()
+                .map(|d| d.name().unwrap_or_default());
+            if should_switch(
+                secondary_dead,
+                &current,
+                secondary_name.as_deref(),
+                resolved.secondary_is_preferred,
+            ) {
+                if let Some(device) = resolved.secondary {
+                    if !self.switch_secondary(
+                        device,
+                        resolved.secondary_is_preferred,
+                        processor,
+                        secondary,
+                    ) {
+                        still_failed |= secondary_dead;
+                    }
+                }
+            } else {
+                still_failed |= secondary_dead;
+            }
+        }
+
+        if still_failed && !self.failure_logged {
+            log::warn!("Capture device lost and no replacement could be opened yet; retrying");
+            self.failure_logged = true;
+        } else if !still_failed {
+            self.failure_logged = false;
+        }
+        self.on_fallback.store(
+            !(self.primary_on_preferred && self.secondary_on_preferred),
+            Ordering::Release,
+        );
+    }
+
+    /// Open `device` as the new primary stream and continue the recording on
+    /// it. Returns false (keeping the old stream) if it could not be opened.
+    #[allow(clippy::too_many_arguments)]
+    fn switch_primary(
+        &mut self,
+        device: Device,
+        preferred: bool,
+        processor: &mut CaptureProcessor,
+        primary: &mut Consumer<f32>,
+        secondary: &mut Option<Consumer<f32>>,
+        transport: &Arc<CaptureTransportState>,
+        primary_is_loopback: &mut bool,
+    ) -> bool {
+        let name = device.name().unwrap_or_default();
+        let opened = AudioRecorder::get_preferred_config(&device)
+            .map_err(|e| format!("Failed to fetch preferred config: {e}"))
+            .and_then(|config| {
+                let (stream, consumer) = AudioRecorder::build_stream_for_config(
+                    &device,
+                    &config,
+                    config.channels() as usize,
+                    self.selected_channel,
+                    Arc::clone(transport),
+                    Arc::clone(&self.primary_error),
+                )?;
+                stream
+                    .play()
+                    .map_err(|e| format!("Failed to start microphone stream: {e}"))?;
+                Ok((stream, consumer, config.sample_rate().0))
+            });
+        let (stream, consumer, sample_rate) = match opened {
+            Ok(opened) => opened,
+            Err(e) => {
+                log::debug!("Could not switch capture to '{name}': {e}");
+                self.suspended.suspend(&name, Instant::now());
+                return false;
+            }
+        };
+
+        // Everything the old stream delivered belongs before the switch.
+        while drain_mixed(processor, primary, secondary, ChunkDisposition::Capture) > 0 {}
+        processor.rebind_primary(sample_rate);
+        drop(self.primary_stream.replace(stream));
+        *primary = consumer;
+        self.primary_error.store(false, Ordering::Release);
+        transport.pause_acknowledged.store(false, Ordering::Relaxed);
+        transport.pause_requested.store(false, Ordering::Release);
+        *primary_is_loopback = is_loopback_device(&device);
+
+        if preferred && !self.primary_on_preferred {
+            log::info!("Preferred capture device '{name}' is back; recording continues on it");
+        } else {
+            log::info!(
+                "Capture device '{}' changed or was lost; recording continues on '{name}' ({sample_rate} Hz)",
+                self.primary_name
+            );
+        }
+        self.primary_name = name;
+        self.primary_on_preferred = preferred;
+        self.last_primary_audio = Instant::now();
+        true
+    }
+
+    /// Replace the mixed-in secondary stream with one on `device`.
+    fn switch_secondary(
+        &mut self,
+        device: Device,
+        preferred: bool,
+        processor: &mut CaptureProcessor,
+        secondary: &mut Option<Consumer<f32>>,
+    ) -> bool {
+        let name = device.name().unwrap_or_default();
+        let secondary_error = Arc::clone(&self.secondary_error);
+        let opened = match AudioRecorder::open_secondary_stream(&device, secondary_error) {
+            Ok(opened) => opened,
+            Err(e) => {
+                log::debug!("Could not switch system audio capture to '{name}': {e}");
+                self.suspended.suspend(&name, Instant::now());
+                return false;
+            }
+        };
+
+        drop(self.secondary_stream.replace(opened.stream));
+        *secondary = Some(opened.consumer);
+        processor.enable_secondary(opened.sample_rate);
+        self.secondary_error.store(false, Ordering::Release);
+
+        log::info!(
+            "System audio capture moved from '{}' to '{name}'",
+            self.secondary_name.as_deref().unwrap_or_default()
+        );
+        self.secondary_name = Some(name);
+        self.secondary_on_preferred = preferred;
+        true
+    }
+}
+
 /// Loopback streams go quiet when nothing plays, so waiting for their pause
 /// acknowledgement only needs to cover one normal callback period.
 const LOOPBACK_PAUSE_ACK_TIMEOUT: Duration = Duration::from_millis(150);
 
+#[allow(clippy::too_many_arguments)]
 fn run_consumer(
     mut processor: CaptureProcessor,
     mut sample_consumer: Consumer<f32>,
     mut secondary_consumer: Option<Consumer<f32>>,
-    primary_is_loopback: bool,
+    mut primary_is_loopback: bool,
     cmd_rx: mpsc::Receiver<Cmd>,
     transport: Arc<CaptureTransportState>,
     stream_error: Arc<AtomicBool>,
+    mut reconnector: Option<Reconnector>,
 ) {
     let mut recording = false;
     let mut stream_error_logged = false;
@@ -1183,6 +1612,9 @@ fn run_consumer(
                         // was idle; only active-capture loss is relevant.
                         transport.overrun_samples.store(0, Ordering::Release);
                         processor.begin_recording(policy, ready_tx);
+                        if let Some(reconnector) = reconnector.as_mut() {
+                            reconnector.recording_started();
+                        }
                         recording = true;
                     }
                     Cmd::Stop(reply_tx) => {
@@ -1196,8 +1628,12 @@ fn run_consumer(
                         transport.pause_acknowledged.store(false, Ordering::Relaxed);
                         transport.pause_requested.store(true, Ordering::Release);
                         let pause_started = Instant::now();
+                        // A stream that already reported an error will never
+                        // acknowledge; don't make the user wait for it.
                         let pause_timeout = if primary_is_loopback {
                             LOOPBACK_PAUSE_ACK_TIMEOUT
+                        } else if stream_error.load(Ordering::Acquire) {
+                            Duration::ZERO
                         } else {
                             PAUSE_ACK_TIMEOUT
                         };
@@ -1271,23 +1707,42 @@ fn run_consumer(
         } else {
             ChunkDisposition::Discard
         };
-        drain_mixed(
+        let drained = drain_mixed(
             &mut processor,
             &mut sample_consumer,
             &mut secondary_consumer,
             disposition,
         );
+        if let Some(reconnector) = reconnector.as_mut() {
+            if drained > 0 {
+                reconnector.primary_audio_arrived();
+            }
+            if recording {
+                reconnector.maintain(
+                    &mut processor,
+                    &mut sample_consumer,
+                    &mut secondary_consumer,
+                    &transport,
+                    &mut primary_is_loopback,
+                );
+            }
+        }
 
         let overrun_samples = transport.overrun_samples.swap(0, Ordering::AcqRel);
         if recording {
             processor.observe_overrun(overrun_samples);
         }
 
-        // The CPAL error callback only sets an atomic; log here and rebuild the
-        // stream on the next start.
-        if stream_error.load(Ordering::Acquire) && !stream_error_logged {
-            log::error!("Microphone backend reported a stream error; it will be rebuilt");
-            stream_error_logged = true;
+        // The CPAL error callback only sets an atomic; log here. An active
+        // recording switches devices above; otherwise the stream is rebuilt
+        // on the next start.
+        if stream_error.load(Ordering::Acquire) {
+            if !stream_error_logged {
+                log::error!("Microphone backend reported a stream error; it will be rebuilt");
+                stream_error_logged = true;
+            }
+        } else {
+            stream_error_logged = false;
         }
     }
 }

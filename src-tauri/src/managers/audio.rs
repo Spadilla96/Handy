@@ -1,22 +1,22 @@
 #[cfg(target_os = "windows")]
 use crate::audio_toolkit::list_output_devices;
 use crate::audio_toolkit::{
-    list_input_devices,
+    list_input_devices, pick_capture_device,
     vad::{
         frames_for_duration_ms, EarshotVad, SmoothedVad, VAD_OFFLINE_HANGOVER_MS, VAD_ONSET_MS,
         VAD_PREFILL_MS, VAD_STREAMING_HANGOVER_MS,
     },
-    AudioRecorder, SileroVad, VadPolicy, VoiceActivityDetector,
+    AudioRecorder, CpalDeviceInfo, ResolvedDevices, SileroVad, VadPolicy, VoiceActivityDetector,
 };
 use crate::helpers::clamshell;
 use crate::managers::transcription::StreamRouter;
-use crate::settings::{get_settings, write_settings, AppSettings, AudioSource, VadBackend};
+use crate::settings::{get_settings, AppSettings, AudioSource, VadBackend};
 use crate::utils;
 use log::{debug, error, info, trace, warn};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const SILERO_VAD_THRESHOLD: f32 = 0.3;
@@ -277,6 +277,135 @@ struct MicrophoneResolution {
     unavailable_selected_microphone: Option<String>,
 }
 
+/// The persisted microphone preference currently in effect. Only runs the
+/// clamshell probe (an `ioreg` subprocess, ~10-20ms) when a clamshell
+/// microphone is actually configured.
+fn desired_microphone(settings: &AppSettings) -> DesiredMicrophone {
+    if let Some(clamshell_microphone) = &settings.clamshell_microphone {
+        let clamshell_started = Instant::now();
+        let is_clamshell = clamshell::is_clamshell().unwrap_or(false);
+        debug!(
+            "device resolve: clamshell_check={:?} (clamshell={})",
+            clamshell_started.elapsed(),
+            is_clamshell
+        );
+        if is_clamshell {
+            return DesiredMicrophone::Clamshell(clamshell_microphone.clone());
+        }
+    }
+    match &settings.selected_microphone {
+        Some(name) => DesiredMicrophone::Selected(name.clone()),
+        None => DesiredMicrophone::Default,
+    }
+}
+
+/// The output device captured as system audio: the configured one, or the
+/// current default. The flag is false when the configured one is missing.
+#[cfg(target_os = "windows")]
+fn resolve_output_device(settings: &AppSettings) -> (Option<cpal::Device>, bool) {
+    use cpal::traits::HostTrait;
+
+    let named = settings.system_audio_device.as_ref().and_then(|name| {
+        match list_output_devices() {
+            Ok(devices) => devices
+                .into_iter()
+                .find(|d| &d.name == name)
+                .map(|d| d.device),
+            Err(e) => {
+                debug!("Failed to list output devices, using default: {}", e);
+                None
+            }
+        }
+    });
+    let is_preferred = settings.system_audio_device.is_none() || named.is_some();
+    let device = named.or_else(|| crate::audio_toolkit::get_cpal_host().default_output_device());
+    (device, is_preferred)
+}
+
+/// Choose from a fresh enumeration, skipping `avoid` while alternatives exist;
+/// falls back to the host default if enumeration itself fails.
+fn pick_listed_device(
+    listed: Result<Vec<CpalDeviceInfo>, Box<dyn std::error::Error>>,
+    preferred: Option<&str>,
+    avoid: &[String],
+    host_default: impl FnOnce() -> Option<cpal::Device>,
+) -> (Option<cpal::Device>, bool) {
+    match listed {
+        Ok(devices) => pick_capture_device(
+            devices
+                .into_iter()
+                .map(|d| (d.name, d.is_default, d.device))
+                .collect(),
+            preferred,
+            avoid,
+        )
+        .map_or((None, false), |(device, wanted)| (Some(device), wanted)),
+        Err(e) => {
+            debug!("Failed to list devices while switching capture: {}", e);
+            (host_default(), preferred.is_none())
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn pick_output_device(settings: &AppSettings, avoid: &[String]) -> (Option<cpal::Device>, bool) {
+    use cpal::traits::HostTrait;
+
+    pick_listed_device(
+        list_output_devices(),
+        settings.system_audio_device.as_deref(),
+        avoid,
+        || crate::audio_toolkit::get_cpal_host().default_output_device(),
+    )
+}
+
+/// Freshly resolve every capture device from settings, uncached. The recorder
+/// calls this mid-recording when a device disappears (a Bluetooth headset
+/// taking a phone call) and every few seconds to move back once it returns;
+/// `avoid` names devices that just failed.
+fn resolve_capture_devices(app: &tauri::AppHandle, avoid: &[String]) -> ResolvedDevices {
+    use cpal::traits::HostTrait;
+
+    let settings = get_settings(app);
+
+    #[cfg(target_os = "windows")]
+    if settings.audio_source == AudioSource::System {
+        let (primary, primary_is_preferred) = pick_output_device(&settings, avoid);
+        return ResolvedDevices {
+            primary,
+            primary_is_preferred,
+            secondary: None,
+            secondary_is_preferred: true,
+        };
+    }
+
+    let wanted = match desired_microphone(&settings) {
+        DesiredMicrophone::Default => None,
+        DesiredMicrophone::Selected(name) | DesiredMicrophone::Clamshell(name) => Some(name),
+    };
+    let (primary, primary_is_preferred) =
+        pick_listed_device(list_input_devices(), wanted.as_deref(), avoid, || {
+            crate::audio_toolkit::get_cpal_host().default_input_device()
+        });
+
+    #[cfg(target_os = "windows")]
+    let (secondary, secondary_is_preferred) =
+        if settings.audio_source == AudioSource::MicrophoneAndSystem {
+            pick_output_device(&settings, avoid)
+        } else {
+            (None, true)
+        };
+    #[cfg(not(target_os = "windows"))]
+    let (secondary, secondary_is_preferred) = (None, true);
+
+    ResolvedDevices {
+        primary,
+        primary_is_preferred,
+        secondary,
+        secondary_is_preferred,
+    }
+}
+
 /* ──────────────────────────────────────────────────────────────── */
 
 fn create_audio_recorder(
@@ -348,6 +477,10 @@ fn create_audio_recorder(
             move |frame| {
                 router.feed(frame);
             }
+        })
+        .with_device_resolver({
+            let app_handle = app_handle.clone();
+            move |avoid: &[String]| resolve_capture_devices(&app_handle, avoid)
         });
 
     Ok(recorder)
@@ -447,28 +580,6 @@ impl AudioRecordingManager {
 
     /* ---------- helper methods --------------------------------------------- */
 
-    /// The persisted microphone preference currently in effect. Only runs the
-    /// clamshell probe (an `ioreg` subprocess, ~10-20ms) when a clamshell
-    /// microphone is actually configured.
-    fn desired_microphone(&self, settings: &AppSettings) -> DesiredMicrophone {
-        if let Some(clamshell_microphone) = &settings.clamshell_microphone {
-            let clamshell_started = Instant::now();
-            let is_clamshell = clamshell::is_clamshell().unwrap_or(false);
-            debug!(
-                "device resolve: clamshell_check={:?} (clamshell={})",
-                clamshell_started.elapsed(),
-                is_clamshell
-            );
-            if is_clamshell {
-                return DesiredMicrophone::Clamshell(clamshell_microphone.clone());
-            }
-        }
-        match &settings.selected_microphone {
-            Some(name) => DesiredMicrophone::Selected(name.clone()),
-            None => DesiredMicrophone::Default,
-        }
-    }
-
     pub fn invalidate_device_cache(&self) {
         *self.cached_device.lock().unwrap() = None;
     }
@@ -478,24 +589,9 @@ impl AudioRecordingManager {
     /// loopback mode, so the rest of the capture pipeline is unchanged.
     #[cfg(target_os = "windows")]
     fn resolve_system_audio_device(&self, settings: &AppSettings) -> MicrophoneResolution {
-        use cpal::traits::HostTrait;
-
-        let named = settings.system_audio_device.as_ref().and_then(|name| {
-            match list_output_devices() {
-                Ok(devices) => devices
-                    .into_iter()
-                    .find(|d| &d.name == name)
-                    .map(|d| d.device),
-                Err(e) => {
-                    debug!("Failed to list output devices, using default: {}", e);
-                    None
-                }
-            }
-        });
         // Not cached: `cached_device` holds the microphone in mixed mode, and
         // resolving the default output device is cheap.
-        let device =
-            named.or_else(|| crate::audio_toolkit::get_cpal_host().default_output_device());
+        let (device, _) = resolve_output_device(settings);
         if device.is_none() {
             warn!("No output device found for system audio capture");
         }
@@ -521,7 +617,7 @@ impl AudioRecordingManager {
             return self.resolve_system_audio_device(settings);
         }
 
-        let desired = self.desired_microphone(settings);
+        let desired = desired_microphone(settings);
         let (device_name, selected_microphone) = match desired {
             DesiredMicrophone::Default => {
                 debug!("device resolve: no mic configured -> system default");
@@ -581,26 +677,6 @@ impl AudioRecordingManager {
             device,
             unavailable_selected_microphone,
         }
-    }
-
-    /// Keep persisted settings and the UI aligned with a successful runtime
-    /// fallback. Re-read first so recovery cannot clear a microphone the user
-    /// selected concurrently while the stream was being rebuilt.
-    fn persist_default_microphone_after_fallback(&self, unavailable_name: &str) {
-        let mut settings = get_settings(&self.app_handle);
-        if settings.selected_microphone.as_deref() != Some(unavailable_name) {
-            return;
-        }
-
-        settings.selected_microphone = None;
-        write_settings(&self.app_handle, settings);
-        let _ = self.app_handle.emit(
-            "settings-changed",
-            serde_json::json!({
-                "setting": "selected_microphone",
-                "value": "Default"
-            }),
-        );
     }
 
     fn schedule_lazy_close(&self) {
@@ -781,9 +857,11 @@ impl AudioRecordingManager {
 
         *open_flag = true;
         if let Some(unavailable_name) = resolution.unavailable_selected_microphone {
-            // Do this only after the default stream opened successfully. A
-            // failed fallback must not erase the user's microphone preference.
-            self.persist_default_microphone_after_fallback(&unavailable_name);
+            // Keep the preference: a Bluetooth headset busy with a phone call
+            // comes back, and the recorder moves to it once it does.
+            warn!(
+                "Selected microphone '{unavailable_name}' is unavailable; using the system default for now"
+            );
         }
         // This timing covers through cpal's stream.play() returning — i.e. the
         // point cpal surfaces as "stream running." It does NOT guarantee the
