@@ -233,6 +233,11 @@
     },
     "sound": {
       "title": "Sonido",
+
+      "teamsMicSync": {
+        "label": "Seguir el silencio de Teams",
+        "description": "Durante una llamada de Teams, silencia y reactiva el micrófono de Handy cuando lo haces en Teams (solo mientras graba)"
+      },
       "microphone": {
         "title": "Micrófono",
         "description": "Selecciona tu dispositivo de micrófono preferido",

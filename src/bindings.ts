@@ -783,6 +783,14 @@ async setMicEnabled(enabled: boolean) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async changeTeamsMicSyncSetting(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_teams_mic_sync_setting", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getMicState() : Promise<MicState> {
     return await TAURI_INVOKE("get_mic_state");
 },
@@ -1156,7 +1164,7 @@ overlay_custom_anchor?: OverlayAnchor | null;
 /**
  * Show the Live overlay as the small pill instead of the text panel.
  */
-overlay_live_compact?: boolean }
+overlay_live_compact?: boolean; teams_mic_sync?: boolean }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
 export type AvailableAccelerators = { transcribe: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }

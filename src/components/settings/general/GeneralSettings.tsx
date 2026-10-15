@@ -15,6 +15,7 @@ import { AudioFeedback } from "../AudioFeedback";
 import { useSettings } from "../../../hooks/useSettings";
 import { VolumeSlider } from "../VolumeSlider";
 import { MuteWhileRecording } from "../MuteWhileRecording";
+import { TeamsMicSync } from "../TeamsMicSync";
 import { ModelSettingsCard } from "./ModelSettingsCard";
 
 export const GeneralSettings: React.FC = () => {
@@ -47,6 +48,9 @@ export const GeneralSettings: React.FC = () => {
         )}
         {usesSystemAudio && (
           <SystemAudioDeviceSelector descriptionMode="tooltip" grouped={true} />
+        )}
+        {isWindows && usesMicrophone && (
+          <TeamsMicSync descriptionMode="tooltip" grouped={true} />
         )}
         {/* Muting the output would silence the captured system audio. */}
         {!usesSystemAudio && (

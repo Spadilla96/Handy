@@ -262,6 +262,15 @@ pub async fn set_audio_source(app: AppHandle, source: AudioSource) -> Result<(),
         .map_err(|e| format!("Failed to update audio source: {}", e))
 }
 
+#[tauri::command]
+#[specta::specta]
+pub fn change_teams_mic_sync_setting(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let mut settings = get_settings(&app);
+    settings.teams_mic_sync = enabled;
+    write_settings(&app, settings);
+    Ok(())
+}
+
 #[derive(Serialize, Debug, Clone, Type)]
 pub struct MicState {
     /// The microphone is feeding the recording (not muted).

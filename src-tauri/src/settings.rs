@@ -555,6 +555,10 @@ pub struct AppSettings {
     /// Show the Live overlay as the small pill instead of the text panel.
     #[serde(default)]
     pub overlay_live_compact: bool,
+    /// Mirror the mute button of a Microsoft Teams call onto the microphone
+    /// while recording (Windows only).
+    #[serde(default)]
+    pub teams_mic_sync: bool,
 }
 
 fn default_model() -> String {
@@ -1015,6 +1019,7 @@ pub fn get_default_settings() -> AppSettings {
         overlay_style: default_overlay_style(),
         overlay_custom_anchor: None,
         overlay_live_compact: false,
+        teams_mic_sync: false,
     }
 }
 

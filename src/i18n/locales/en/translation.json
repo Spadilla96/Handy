@@ -233,6 +233,11 @@
     },
     "sound": {
       "title": "Sound",
+
+      "teamsMicSync": {
+        "label": "Follow Teams mute",
+        "description": "During a Teams call, mute and unmute Handy's microphone when you mute or unmute in Teams (only while recording)"
+      },
       "microphone": {
         "title": "Microphone",
         "description": "Select your preferred microphone device",

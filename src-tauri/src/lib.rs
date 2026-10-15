@@ -226,6 +226,8 @@ fn initialize_core_logic(app_handle: &AppHandle) {
         Err(e) => log::error!("Failed to initialize meeting manager: {e:#}"),
     }
     app_handle.manage(tray::TrayState::new());
+    // Follows the Teams call mute button while recording (opt-in setting).
+    managers::teams::start(app_handle);
 
     // Note: Shortcuts are NOT initialized here.
     // The frontend is responsible for calling the `initialize_shortcuts` command
@@ -758,6 +760,7 @@ pub fn run(cli_args: CliArgs) {
             commands::audio::set_system_audio_device,
             commands::audio::set_mic_enabled,
             commands::audio::get_mic_state,
+            commands::audio::change_teams_mic_sync_setting,
             commands::meeting::get_meeting_models_status,
             commands::meeting::download_meeting_models,
             commands::meeting::list_meetings,
