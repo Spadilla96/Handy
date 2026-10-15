@@ -775,6 +775,17 @@ async setSystemAudioDevice(deviceName: string) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async setMicEnabled(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_mic_enabled", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getMicState() : Promise<MicState> {
+    return await TAURI_INVOKE("get_mic_state");
+},
 async getMeetingModelsStatus() : Promise<MeetingModelsStatus> {
     return await TAURI_INVOKE("get_meeting_models_status");
 },
@@ -1324,6 +1335,15 @@ export type MeetingSavedEvent = { history_id: number; meeting_id: number }
 export type DiarizeFailedEvent = { history_id: number; message: string; cancelled: boolean }
 export type Meeting = { id: number; started_at: number; ended_at: number; title: string; name: string; file_name: string; utterances: Utterance[]; speaker_names: Partial<{ [key in string]: string }>; keep_audio: boolean; audio_available: boolean; audio_expires_at: number | null }
 export type AudioSource = "microphone" | "system" | "microphone_and_system"
+export type MicState = { 
+/**
+ * The microphone is feeding the recording (not muted).
+ */
+enabled: boolean; 
+/**
+ * The active audio source includes a microphone that can be muted.
+ */
+available: boolean; recording: boolean }
 export type VadBackend = "silero" | "earshot"
 export type WindowsMicrophonePermissionStatus = { supported: boolean; overall_access: PermissionAccess; device_access: PermissionAccess; app_access: PermissionAccess; desktop_app_access: PermissionAccess }
 

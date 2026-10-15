@@ -124,6 +124,9 @@ pub struct AudioRecorder {
     /// Set while a mid-recording switch left capture on a stand-in device, so
     /// the next start re-resolves the user's preferred one.
     on_fallback: Arc<AtomicBool>,
+    /// While set, the primary (microphone) stream is replaced by silence before
+    /// mixing, so capture, VAD and the recording keep running uninterrupted.
+    mic_muted: Arc<AtomicBool>,
     resolver: Option<DeviceResolver>,
 }
 
@@ -141,8 +144,19 @@ impl AudioRecorder {
             stream_error: Arc::new(AtomicBool::new(false)),
             secondary_error: Arc::new(AtomicBool::new(false)),
             on_fallback: Arc::new(AtomicBool::new(false)),
+            mic_muted: Arc::new(AtomicBool::new(false)),
             resolver: None,
         })
+    }
+
+    /// Mute or unmute the microphone without touching the capture streams.
+    /// Has no effect when the primary stream is a loopback device.
+    pub fn set_mic_muted(&self, muted: bool) {
+        self.mic_muted.store(muted, Ordering::Relaxed);
+    }
+
+    pub fn is_mic_muted(&self) -> bool {
+        self.mic_muted.load(Ordering::Relaxed)
     }
 
     /// Let the recorder replace a vanished device mid-recording instead of
@@ -249,6 +263,7 @@ impl AudioRecorder {
         let stream_error = Arc::clone(&self.stream_error);
         let secondary_error = Arc::clone(&self.secondary_error);
         let on_fallback = Arc::clone(&self.on_fallback);
+        let mic_muted = Arc::clone(&self.mic_muted);
         let resolver = self.resolver.clone();
 
         let worker = std::thread::spawn(move || {
@@ -367,6 +382,9 @@ impl AudioRecorder {
                         audio_cb,
                         stream_running_at,
                     );
+                    if !primary_is_loopback {
+                        processor.mic_muted = Some(mic_muted);
+                    }
                     let (secondary_keepalive, secondary_consumer) = match secondary_stream {
                         Some(s) => {
                             processor.enable_secondary(s.sample_rate);
@@ -968,6 +986,10 @@ struct CaptureProcessor {
     max_drain_samples: usize,
     first_chunk_logged: bool,
     secondary: Option<SecondaryMix>,
+    /// Mute switch for the primary stream; `None` when the primary is not a
+    /// microphone (loopback), which must never be silenced.
+    mic_muted: Option<Arc<AtomicBool>>,
+    mute_scratch: Vec<f32>,
 
     // ---- recording-scoped: reset by `begin_recording` ------------------- //
     vad_policy: VadPolicy,
@@ -1000,6 +1022,8 @@ impl CaptureProcessor {
             max_drain_samples,
             first_chunk_logged: false,
             secondary: None,
+            mic_muted: None,
+            mute_scratch: Vec::new(),
             vad_policy: VadPolicy::Offline,
             processed_samples: Vec::new(),
             awaiting_first_captured_chunk: None,
@@ -1140,6 +1164,18 @@ impl CaptureProcessor {
         if disposition == ChunkDisposition::Discard {
             return;
         }
+
+        let raw: &[f32] = if self
+            .mic_muted
+            .as_ref()
+            .is_some_and(|muted| muted.load(Ordering::Relaxed))
+        {
+            self.mute_scratch.clear();
+            self.mute_scratch.resize(raw.len(), 0.0);
+            &self.mute_scratch
+        } else {
+            raw
+        };
 
         let raw: &[f32] = match self.secondary.as_mut() {
             Some(mix) => mix.mix(raw),

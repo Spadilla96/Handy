@@ -56,7 +56,7 @@ const OVERLAY_STREAM_HEIGHT: f64 = 120.0;
 
 // Live overlay collapsed to its pill (--ov-mini-w, 300): the timer plus the
 // expand / minimize / cancel buttons make it wider than the Minimal pill.
-const OVERLAY_STREAM_COMPACT_WIDTH: f64 = 320.0;
+const OVERLAY_STREAM_COMPACT_WIDTH: f64 = 344.0;
 
 /// Overlay window size (logical) for a given UI state. `live_compact` is the
 /// user's choice to show the Live overlay as a pill without the text panel.

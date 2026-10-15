@@ -756,6 +756,8 @@ pub fn run(cli_args: CliArgs) {
             commands::audio::get_selected_microphone,
             commands::audio::set_audio_source,
             commands::audio::set_system_audio_device,
+            commands::audio::set_mic_enabled,
+            commands::audio::get_mic_state,
             commands::meeting::get_meeting_models_status,
             commands::meeting::download_meeting_models,
             commands::meeting::list_meetings,

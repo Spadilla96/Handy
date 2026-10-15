@@ -215,6 +215,12 @@ pub async fn get_available_microphones() -> Result<Vec<AudioDevice>, String> {
 #[tauri::command]
 #[specta::specta]
 pub async fn set_selected_microphone(app: AppHandle, device_name: String) -> Result<(), String> {
+    if app
+        .state::<Arc<AudioRecordingManager>>()
+        .is_recording()
+    {
+        return Err("Cannot change audio devices or source while recording".to_string());
+    }
     let mut settings = get_settings(&app);
     settings.selected_microphone = if device_name == "default" {
         None
@@ -236,6 +242,12 @@ pub async fn set_selected_microphone(app: AppHandle, device_name: String) -> Res
 #[tauri::command]
 #[specta::specta]
 pub async fn set_audio_source(app: AppHandle, source: AudioSource) -> Result<(), String> {
+    if app
+        .state::<Arc<AudioRecordingManager>>()
+        .is_recording()
+    {
+        return Err("Cannot change audio devices or source while recording".to_string());
+    }
     if source.captures_system() && !cfg!(target_os = "windows") {
         return Err("System audio capture is only supported on Windows".to_string());
     }
@@ -250,9 +262,44 @@ pub async fn set_audio_source(app: AppHandle, source: AudioSource) -> Result<(),
         .map_err(|e| format!("Failed to update audio source: {}", e))
 }
 
+#[derive(Serialize, Debug, Clone, Type)]
+pub struct MicState {
+    /// The microphone is feeding the recording (not muted).
+    pub enabled: bool,
+    /// The active audio source includes a microphone that can be muted.
+    pub available: bool,
+    pub recording: bool,
+}
+
+/// Mute or unmute the microphone of the recording in progress without
+/// interrupting capture (overlay button).
+#[tauri::command]
+#[specta::specta]
+pub fn set_mic_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
+    app.state::<Arc<AudioRecordingManager>>()
+        .set_mic_enabled(enabled, "manual")
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_mic_state(app: AppHandle) -> MicState {
+    let rm = app.state::<Arc<AudioRecordingManager>>();
+    MicState {
+        enabled: rm.is_mic_enabled(),
+        available: rm.mic_available(),
+        recording: rm.is_recording(),
+    }
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn set_system_audio_device(app: AppHandle, device_name: String) -> Result<(), String> {
+    if app
+        .state::<Arc<AudioRecordingManager>>()
+        .is_recording()
+    {
+        return Err("Cannot change audio devices or source while recording".to_string());
+    }
     let mut settings = get_settings(&app);
     settings.system_audio_device = if device_name == "default" {
         None

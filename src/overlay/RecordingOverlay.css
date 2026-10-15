@@ -50,14 +50,14 @@
      the card's max footprint (--ov-work-w for compact, --ov-open-w for Live),
      since the card is anchored flush to the screen edge in CSS. Keep overlay.rs
      in sync when these change. */
-  --ov-rest-w: 200px; /* resting compact pill (minimal, recording): grip, dot,
-                         waveform, minimize + cancel */
-  --ov-pill-w: 236px; /* base width / Live pill before it opens or collapses
+  --ov-rest-w: 224px; /* resting compact pill (minimal, recording): grip, dot,
+                         waveform, mic + minimize + cancel */
+  --ov-pill-w: 260px; /* base width / Live pill before it opens or collapses
                          (adds the panel/pill toggle) */
   --ov-work-w: 236px; /* minimal working pill (transcribing / polishing) -- wide
                          enough to center longer labels */
   --ov-live-work-w: 272px; /* Live working pill (collapsed): label + 3 controls */
-  --ov-mini-w: 300px; /* Live collapsed to a pill by the user: timer + 3 controls */
+  --ov-mini-w: 324px; /* Live collapsed to a pill by the user: timer + 4 controls */
   --ov-open-w: 392px; /* Live panel, expanded */
   --ov-base-h: 40px; /* control-row height (.sbase) */
   --ov-cap-max-h: 64px; /* max height of the scrolling live-text region */
@@ -473,6 +473,11 @@
 .sx.sx-small svg {
   width: 10px;
   height: 10px;
+}
+
+/* Microphone muted: the button turns red so it is obvious at a glance. */
+.sx.sx-mic.muted {
+  color: #ff5a5a;
 }
 
 /* working state (transcribing / polishing) — spinner + label */

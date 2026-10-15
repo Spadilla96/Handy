@@ -16,7 +16,7 @@ use log::{debug, error, info, trace, warn};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const SILERO_VAD_THRESHOLD: f32 = 0.3;
@@ -965,10 +965,13 @@ impl AudioRecordingManager {
             }
 
             if let Some(rec) = self.recorder.lock().unwrap().as_ref() {
+                // Every recording starts with the microphone live.
+                rec.set_mic_muted(false);
                 match rec.start(vad_policy) {
                     Ok(receiver) => {
                         let generation = self.capture_generation.fetch_add(1, Ordering::AcqRel) + 1;
                         *self.is_recording.lock().unwrap() = true;
+                        self.emit_mic_state(true, "reset");
                         self.set_state(
                             &mut state,
                             RecordingState::Recording {
@@ -1046,6 +1049,15 @@ impl AudioRecordingManager {
 
     pub fn update_selected_device(&self) -> Result<(), anyhow::Error> {
         // Device settings changed; re-enumerate the device and restart capture.
+        // Restarting an active capture would discard its samples and leave the
+        // manager's recording state out of sync with the new recorder (frozen
+        // transcription), so refuse while a recording is in progress.
+        let state = self.state.lock().unwrap();
+        if !matches!(*state, RecordingState::Idle) {
+            return Err(anyhow::anyhow!(
+                "Cannot change the audio device or source while recording"
+            ));
+        }
         self.invalidate_device_cache();
         let was_open = *self.is_open.lock().unwrap();
         if was_open {
@@ -1193,6 +1205,57 @@ impl AudioRecordingManager {
         // across a slow CoreAudio open/close → main-thread deadlock / UI
         // freeze).
         self.recording_active.load(Ordering::SeqCst)
+    }
+
+    /// Whether the microphone is currently feeding the recording (not muted).
+    pub fn is_mic_enabled(&self) -> bool {
+        !self
+            .recorder
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|rec| rec.is_mic_muted())
+    }
+
+    /// Whether the active audio source includes a microphone that can be muted.
+    pub fn mic_available(&self) -> bool {
+        get_settings(&self.app_handle).audio_source != AudioSource::System
+    }
+
+    /// Mute or unmute the microphone of the recording in progress without
+    /// interrupting capture. `origin` is "manual" (overlay button) or "teams".
+    pub fn set_mic_enabled(&self, enabled: bool, origin: &str) -> Result<(), String> {
+        if !self.is_recording() {
+            return Err("Not recording".to_string());
+        }
+        if !self.mic_available() {
+            return Err("The current audio source has no microphone".to_string());
+        }
+        {
+            let guard = self.recorder.lock().unwrap();
+            let rec = guard
+                .as_ref()
+                .ok_or_else(|| "Recorder not available".to_string())?;
+            rec.set_mic_muted(!enabled);
+        }
+        info!(
+            "Microphone {} ({origin})",
+            if enabled { "unmuted" } else { "muted" }
+        );
+        self.emit_mic_state(enabled, origin);
+        Ok(())
+    }
+
+    /// Tell the frontend (overlay) whether the microphone is live.
+    fn emit_mic_state(&self, enabled: bool, origin: &str) {
+        let _ = self.app_handle.emit(
+            "mic-state",
+            serde_json::json!({
+                "enabled": enabled,
+                "available": self.mic_available(),
+                "origin": origin,
+            }),
+        );
     }
 
     /// Cancel any ongoing recording without returning audio samples

@@ -45,6 +45,10 @@ const RecordingOverlay: React.FC = () => {
   const [overflowing, setOverflowing] = useState(false);
   // Live overlay collapsed to the pill (the user's choice; persisted).
   const [compact, setCompact] = useState(false);
+  // Microphone live/muted for the recording in progress (the recording itself
+  // keeps running either way). `micAvailable` is false for system-only audio.
+  const [micEnabled, setMicEnabled] = useState(true);
+  const [micAvailable, setMicAvailable] = useState(false);
 
   const smoothedLevelsRef = useRef<number[]>(Array(16).fill(0));
   // When capture started, so the timer survives the overlay being minimized.
@@ -86,6 +90,13 @@ const RecordingOverlay: React.FC = () => {
         } catch {
           // Keep the previous/default placement if settings can't be read.
         }
+        try {
+          const mic = await commands.getMicState();
+          setMicEnabled(mic.enabled);
+          setMicAvailable(mic.available);
+        } catch {
+          // Keep the previous mic state if it can't be read.
+        }
         setState(overlayState);
         if (overlayState === "streaming") {
           setPhase("listening");
@@ -116,6 +127,14 @@ const RecordingOverlay: React.FC = () => {
       }>("overlay-layout", (event) => {
         setPosition(event.payload.position === "top" ? "top" : "bottom");
         setCompact(event.payload.compact);
+      });
+
+      const unlistenMic = await listen<{
+        enabled: boolean;
+        available: boolean;
+      }>("mic-state", (event) => {
+        setMicEnabled(event.payload.enabled);
+        setMicAvailable(event.payload.available);
       });
 
       const unlistenReady = await listen("recording-ready", () => {
@@ -151,6 +170,7 @@ const RecordingOverlay: React.FC = () => {
         unlistenHide();
         unlistenRestore();
         unlistenLayout();
+        unlistenMic();
         unlistenReady();
         unlistenLevel();
         unlistenStream();
@@ -275,8 +295,48 @@ const RecordingOverlay: React.FC = () => {
     </button>
   );
 
-  const controls = (live: boolean) => (
+  // Mute/unmute the microphone without interrupting the recording.
+  const micBtn = (
+    <button
+      className={`sx sx-small sx-mic${micEnabled ? "" : " muted"}`}
+      aria-label={micEnabled ? t("overlay.micOff") : t("overlay.micOn")}
+      title={micEnabled ? t("overlay.micOff") : t("overlay.micOn")}
+      aria-pressed={!micEnabled}
+      onClick={() => commands.setMicEnabled(!micEnabled)}
+    >
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <rect
+          x="6"
+          y="1.5"
+          width="4"
+          height="8"
+          rx="2"
+          stroke="currentColor"
+          strokeWidth="1.4"
+          fill="none"
+        />
+        <path
+          d="M3.5 7.5 C3.5 10.5 5.5 12 8 12 C10.5 12 12.5 10.5 12.5 7.5 M8 12 L8 14.5"
+          stroke="currentColor"
+          strokeWidth="1.4"
+          strokeLinecap="round"
+          fill="none"
+        />
+        {!micEnabled && (
+          <path
+            d="M2.5 2.5 L13.5 13.5"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+          />
+        )}
+      </svg>
+    </button>
+  );
+
+  const controls = (live: boolean, withMic = false) => (
     <>
+      {withMic && micAvailable && micBtn}
       {live && toggleBtn}
       {minimizeBtn}
       {cancelBtn}
@@ -304,7 +364,7 @@ const RecordingOverlay: React.FC = () => {
       {waveform}
       <div className="sbase-r">
         {showTimer && <span className="stimer">{fmtTime(elapsed)}</span>}
-        {controls(live)}
+        {controls(live, true)}
       </div>
     </div>
   );
