@@ -48,10 +48,11 @@ mod watch {
     use std::sync::Arc;
     use std::time::Duration;
     use tauri::{AppHandle, Manager};
-    use windows::core::{BSTR, VARIANT};
+    use windows::core::BSTR;
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
     };
+    use windows::Win32::System::Variant::VARIANT;
     use windows::Win32::UI::Accessibility::{
         CUIAutomation, IUIAutomation, TreeScope_Children, TreeScope_Descendants,
         UIA_AutomationIdPropertyId,
