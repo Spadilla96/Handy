@@ -10,7 +10,7 @@ use crate::audio_toolkit::{
 };
 use crate::helpers::clamshell;
 use crate::managers::transcription::StreamRouter;
-use crate::settings::{get_settings, AppSettings, AudioSource, VadBackend};
+use crate::settings::{get_settings, write_settings, AppSettings, AudioSource, VadBackend};
 use crate::utils;
 use log::{debug, error, info, trace, warn};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -1244,6 +1244,35 @@ impl AudioRecordingManager {
         );
         self.emit_mic_state(enabled, origin);
         Ok(())
+    }
+
+    /// Switch a "system audio only" source to "microphone + system" because a
+    /// Teams call is active, so the user's own voice is never left out. The
+    /// change is persisted. Idle, the warm stream is reopened right away;
+    /// mid-recording, the recorder's device resolver picks it up within a few
+    /// seconds without interrupting capture. Returns whether it switched.
+    pub fn upgrade_source_for_call(&self) -> bool {
+        let mut settings = get_settings(&self.app_handle);
+        if settings.audio_source != AudioSource::System {
+            return false;
+        }
+        settings.audio_source = AudioSource::MicrophoneAndSystem;
+        write_settings(&self.app_handle, settings);
+        info!("Teams call detected: audio source switched to microphone + system audio");
+        let _ = self.app_handle.emit(
+            "settings-changed",
+            serde_json::json!({
+                "setting": "audio_source",
+                "value": AudioSource::MicrophoneAndSystem,
+            }),
+        );
+
+        if self.is_recording() {
+            self.emit_mic_state(self.is_mic_enabled(), "teams");
+        } else if let Err(e) = self.update_selected_device() {
+            warn!("Failed to reopen capture with the microphone added: {e}");
+        }
+        true
     }
 
     /// Tell the frontend (overlay) whether the microphone is live.

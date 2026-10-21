@@ -504,6 +504,13 @@ impl ShortcutAction for TranscribeAction {
         set_tray_state(app, TrayIconState::Recording);
         let tray_elapsed = tray_started.elapsed();
 
+        // A Teams meeting needs the user's own voice too: never record it with
+        // system audio only. Done before reading settings so everything below
+        // sees the final source.
+        if crate::managers::teams::call_active() {
+            rm.upgrade_source_for_call();
+        }
+
         // Get the microphone mode to determine audio feedback timing
         let plan_started = Instant::now();
         let settings = get_settings(app);

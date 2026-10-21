@@ -6,6 +6,21 @@
 //! exposes. While a recording is in progress and a call window exists, every
 //! change of that state mutes or unmutes Handy's microphone. Outside a call
 //! nothing is touched, so the overlay button stays independent.
+//!
+//! The same watcher keeps a "call active" flag while the audio source is
+//! "system audio only", and switches that source to "microphone + system"
+//! whenever a call is found (at recording start or mid-recording), so the
+//! user's own voice is never left out of a meeting.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static CALL_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Whether a Teams call window was seen on the latest check. Only kept fresh
+/// while the audio source is "system audio only" or a recording is running.
+pub fn call_active() -> bool {
+    CALL_ACTIVE.load(Ordering::Relaxed)
+}
 
 /// Whether a call button's accessible name means the microphone is muted
 /// (`Some(true)`), live (`Some(false)`), or is not recognised (`None`).
@@ -41,12 +56,13 @@ pub fn start(app: &tauri::AppHandle) {
 
 #[cfg(windows)]
 mod watch {
-    use super::parse_muted;
+    use super::{parse_muted, CALL_ACTIVE};
     use crate::managers::audio::AudioRecordingManager;
-    use crate::settings::get_settings;
+    use crate::settings::{get_settings, AudioSource};
     use log::{debug, warn};
+    use std::sync::atomic::Ordering;
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use tauri::{AppHandle, Manager};
     use windows::core::BSTR;
     use windows::Win32::System::Com::{
@@ -59,6 +75,9 @@ mod watch {
     };
 
     const POLL_INTERVAL: Duration = Duration::from_millis(700);
+    /// While idle only the "call active" flag is kept fresh, for the check at
+    /// recording start.
+    const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(2);
     const TEAMS_WINDOW_CLASS: &str = "TeamsWebView";
     const MIC_BUTTON_ID: &str = "microphone-button";
 
@@ -120,15 +139,26 @@ mod watch {
         // call is detected, so joining a call mid-recording re-aligns.
         let mut last: Option<bool> = None;
         let mut warned_unknown = false;
+        let mut last_idle_check: Option<Instant> = None;
 
         loop {
             std::thread::sleep(POLL_INTERVAL);
 
             let recorder = app.state::<Arc<AudioRecordingManager>>();
-            if !get_settings(&app).teams_mic_sync || !recorder.is_recording() {
+            let settings = get_settings(&app);
+            let recording = recorder.is_recording();
+            let system_only = settings.audio_source == AudioSource::System;
+            if !recording {
                 last = None;
+            }
+            if !recording && !system_only {
+                CALL_ACTIVE.store(false, Ordering::Relaxed);
                 continue;
             }
+            if !recording && last_idle_check.is_some_and(|at| at.elapsed() < IDLE_POLL_INTERVAL) {
+                continue;
+            }
+            last_idle_check = (!recording).then(Instant::now);
 
             if teams.is_none() {
                 teams = Teams::new();
@@ -137,7 +167,22 @@ mod watch {
                 continue;
             };
 
-            let muted = teams.mic_button_name().and_then(|name| {
+            let button = teams.mic_button_name();
+            CALL_ACTIVE.store(button.is_some(), Ordering::Relaxed);
+
+            if !recording {
+                continue;
+            }
+            if button.is_some() && system_only && recorder.upgrade_source_for_call() {
+                // The mute state seen so far had no microphone to apply to.
+                last = None;
+            }
+            if !settings.teams_mic_sync {
+                last = None;
+                continue;
+            }
+
+            let muted = button.and_then(|name| {
                 let parsed = parse_muted(&name);
                 if parsed.is_none() && !warned_unknown {
                     warned_unknown = true;

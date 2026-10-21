@@ -383,7 +383,7 @@ impl AudioRecorder {
                         stream_running_at,
                     );
                     if !primary_is_loopback {
-                        processor.mic_muted = Some(mic_muted);
+                        processor.mic_muted = Some(Arc::clone(&mic_muted));
                     }
                     let (secondary_keepalive, secondary_consumer) = match secondary_stream {
                         Some(s) => {
@@ -404,6 +404,7 @@ impl AudioRecorder {
                             primary_error: Arc::clone(&stream_error),
                             secondary_error,
                             on_fallback,
+                            mic_muted,
                             primary_name: thread_device.name().unwrap_or_default(),
                             secondary_name: secondary
                                 .as_ref()
@@ -1360,6 +1361,8 @@ struct Reconnector {
     primary_error: Arc<AtomicBool>,
     secondary_error: Arc<AtomicBool>,
     on_fallback: Arc<AtomicBool>,
+    /// Muting applies only while the primary stream is a real microphone.
+    mic_muted: Arc<AtomicBool>,
     primary_name: String,
     /// `None` when no secondary stream is mixed in.
     secondary_name: Option<String>,
@@ -1436,8 +1439,14 @@ impl Reconnector {
             .primary
             .as_ref()
             .map(|d| d.name().unwrap_or_default());
+        // The source changed between system audio only and a microphone: move
+        // even to a stand-in device, as if the current stream had died.
+        let kind_changed = resolved
+            .primary
+            .as_ref()
+            .is_some_and(|d| is_loopback_device(d) != *primary_is_loopback);
         if should_switch(
-            primary_dead,
+            primary_dead || kind_changed,
             &self.primary_name,
             primary_name.as_deref(),
             resolved.primary_is_preferred,
@@ -1483,6 +1492,11 @@ impl Reconnector {
             } else {
                 still_failed |= secondary_dead;
             }
+        } else if let Some(device) = resolved.secondary.filter(|_| !*primary_is_loopback) {
+            // The source gained system audio mid-recording (system audio only
+            // → microphone + system) and the primary already moved to the
+            // microphone. A failed open is retried on the next probe.
+            self.switch_secondary(device, resolved.secondary_is_preferred, processor, secondary);
         }
 
         if still_failed && !self.failure_logged {
@@ -1545,6 +1559,7 @@ impl Reconnector {
         transport.pause_acknowledged.store(false, Ordering::Relaxed);
         transport.pause_requested.store(false, Ordering::Release);
         *primary_is_loopback = is_loopback_device(&device);
+        processor.mic_muted = (!*primary_is_loopback).then(|| Arc::clone(&self.mic_muted));
 
         if preferred && !self.primary_on_preferred {
             log::info!("Preferred capture device '{name}' is back; recording continues on it");

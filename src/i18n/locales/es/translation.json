@@ -266,7 +266,7 @@
       },
       "audioSource": {
         "title": "Fuente de audio",
-        "description": "Graba desde tu micrófono, transcribe el audio que reproduce tu equipo (reuniones, videos) o mezcla ambos para captar las dos partes de una llamada. Usa auriculares al mezclar para evitar eco.",
+        "description": "Graba desde tu micrófono, transcribe el audio que reproduce tu equipo (reuniones, videos) o mezcla ambos para captar las dos partes de una llamada. Usa auriculares al mezclar para evitar eco. Si hay una llamada de Teams activa, \"Audio del sistema\" pasa automáticamente a \"Micrófono + sistema\".",
         "microphone": "Micrófono",
         "system": "Audio del sistema",
         "mixed": "Micrófono + sistema"

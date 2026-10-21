@@ -266,7 +266,7 @@
       },
       "audioSource": {
         "title": "Audio Source",
-        "description": "Record from your microphone, transcribe the audio your computer is playing (meetings, videos), or mix both to capture both sides of a call. Use headphones when mixing to avoid echo.",
+        "description": "Record from your microphone, transcribe the audio your computer is playing (meetings, videos), or mix both to capture both sides of a call. Use headphones when mixing to avoid echo. While a Teams call is active, \"System audio\" switches automatically to \"Microphone + system\".",
         "microphone": "Microphone",
         "system": "System audio",
         "mixed": "Microphone + system"
