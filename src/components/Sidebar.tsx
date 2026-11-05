@@ -146,7 +146,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
       aria-label={t("sidebar.navigation", { defaultValue: "Navigation" })}
       className="flex flex-col w-[84px] shrink-0 h-full border-e border-mid-gray/20 items-center px-2 py-3 gap-1"
     >
-      <HandyHand width={36} height={36} className="mb-3 mt-1" />
+      <div className="mb-3 mt-1">
+        <HandyHand width={36} height={36} />
+      </div>
       {mainSections.map(renderItem)}
       <div className="flex-1" />
       {footerSections.map(renderItem)}
