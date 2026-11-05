@@ -25,6 +25,7 @@ import {
 } from "./components/settings";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar, SidebarSection, SECTIONS_CONFIG } from "./components/Sidebar";
+import { TopBar } from "./components/TopBar";
 import { WhatsNewGate } from "./components/whats-new";
 import { useSettings } from "./hooks/useSettings";
 import { useSettingsStore } from "./stores/settingsStore";
@@ -377,6 +378,12 @@ function App() {
           />
           {/* Scrollable content area */}
           <div className="flex-1 flex flex-col overflow-hidden">
+            <TopBar
+              title={t(
+                SECTIONS_CONFIG[currentSection]?.labelKey ??
+                  SECTIONS_CONFIG.general.labelKey,
+              )}
+            />
             <div ref={settingsScrollRef} className="flex-1 overflow-y-auto">
               <div className="flex flex-col items-center p-4 gap-4">
                 <AccessibilityPermissions />

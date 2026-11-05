@@ -18,7 +18,13 @@
     "history": "History",
     "debug": "Debug",
     "about": "About",
-    "meetings": "Meetings"
+    "meetings": "Meetings",
+    "navigation": "Navigation"
+  },
+  "topBar": {
+    "newRecording": "New recording",
+    "stop": "Stop and transcribe",
+    "cancel": "Cancel recording"
   },
   "onboarding": {
     "subtitle": "To get started, choose a transcription model",
@@ -493,7 +499,14 @@
       "viewMeeting": "View meeting",
       "meetingProcessing": "Processing as a meeting… {{percent}}%. Click to cancel.",
       "meetingBusy": "Another recording is being processed as a meeting",
-      "meetingDownloadConfirm": "Processing meetings needs two models (about 850 MB, downloaded once). Download them now?"
+      "meetingDownloadConfirm": "Processing meetings needs two models (about 850 MB, downloaded once). Download them now?",
+      "search": "Search transcriptions…",
+      "filter": "Filter",
+      "filterAll": "All",
+      "filterSaved": "Saved",
+      "noMatches": "No transcriptions match your search.",
+      "today": "Today",
+      "yesterday": "Yesterday"
     },
     "debug": {
       "title": "Debug",
@@ -766,6 +779,7 @@
     },
     "detail": {
       "back": "Back",
+      "selectPrompt": "Select a meeting to see its transcript.",
       "rename": "Name this meeting",
       "renameSpeakerHint": "Click a speaker above to hear their first words, the pencil or a name in the transcript to rename them, or any text to hear that moment.",
       "playFrom": "Play from here",

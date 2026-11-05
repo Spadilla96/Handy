@@ -18,7 +18,13 @@
     "history": "Historial",
     "debug": "Depuración",
     "about": "Acerca de",
-    "meetings": "Reuniones"
+    "meetings": "Reuniones",
+    "navigation": "Navegación"
+  },
+  "topBar": {
+    "newRecording": "Nueva grabación",
+    "stop": "Detener y transcribir",
+    "cancel": "Cancelar grabación"
   },
   "onboarding": {
     "subtitle": "Para comenzar, elige un modelo de transcripción",
@@ -493,7 +499,14 @@
       "viewMeeting": "Ver reunión",
       "meetingProcessing": "Procesando como reunión… {{percent}}%. Haz clic para cancelar.",
       "meetingBusy": "Ya se está procesando otra grabación como reunión",
-      "meetingDownloadConfirm": "Para procesar reuniones se necesitan dos modelos (unos 850 MB, se descargan una sola vez). ¿Descargarlos ahora?"
+      "meetingDownloadConfirm": "Para procesar reuniones se necesitan dos modelos (unos 850 MB, se descargan una sola vez). ¿Descargarlos ahora?",
+      "search": "Buscar en transcripciones…",
+      "filter": "Filtro",
+      "filterAll": "Todas",
+      "filterSaved": "Favoritas",
+      "noMatches": "Ninguna transcripción coincide con la búsqueda.",
+      "today": "Hoy",
+      "yesterday": "Ayer"
     },
     "debug": {
       "title": "Depuración",
@@ -766,6 +779,7 @@
     },
     "detail": {
       "back": "Volver",
+      "selectPrompt": "Selecciona una reunión para ver su transcripción.",
       "rename": "Nombrar esta reunión",
       "renameSpeakerHint": "Haz clic en un hablante de arriba para escuchar sus primeras palabras, en el lápiz o en su nombre en la transcripción para renombrarlo, o en cualquier texto para escuchar ese momento.",
       "playFrom": "Reproducir desde aquí",

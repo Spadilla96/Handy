@@ -530,6 +530,12 @@ async showMainWindowCommand() : Promise<Result<null, string>> {
 async cancelOperation() : Promise<void> {
     await TAURI_INVOKE("cancel_operation");
 },
+/**
+ * Start or stop a recording from the UI, exactly like the global shortcut.
+ */
+async toggleTranscription() : Promise<void> {
+    await TAURI_INVOKE("toggle_transcription");
+},
 async isPortable() : Promise<boolean> {
     return await TAURI_INVOKE("is_portable");
 },

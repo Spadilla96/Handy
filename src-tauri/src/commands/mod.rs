@@ -18,6 +18,13 @@ pub fn cancel_operation(app: AppHandle) {
     cancel_current_operation(&app);
 }
 
+/// Start or stop a recording from the UI, exactly like the global shortcut.
+#[tauri::command]
+#[specta::specta]
+pub fn toggle_transcription(app: AppHandle) {
+    crate::signal_handle::send_transcription_input(&app, "transcribe", "UI");
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn is_portable() -> bool {

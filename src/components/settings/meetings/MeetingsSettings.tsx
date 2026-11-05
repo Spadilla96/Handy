@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
-  ArrowLeft,
   Copy,
   Download,
   Loader2,
@@ -386,261 +385,269 @@ export const MeetingsSettings: React.FC = () => {
       ? Math.round((models.downloaded / models.total) * 100)
       : 0;
 
-  // ---- Detail view --------------------------------------------------------
-  if (selected) {
-    const names = nameFor(selected);
-    return (
-      <div className="max-w-3xl w-full mx-auto space-y-4">
-        <Button variant="ghost" size="sm" onClick={() => setSelected(null)}>
-          <span className="inline-flex items-center gap-1">
-            <ArrowLeft size={14} />
-            {t("meetings.detail.back")}
-          </span>
-        </Button>
-        <div className="space-y-1">
-          <div className="flex items-baseline gap-2 text-lg font-semibold">
-            <span className="shrink-0">{titlePrefix(selected)} -</span>
-            {editingTitle !== null ? (
+  // ---- Detail pane --------------------------------------------------------
+  const detailView = selected ? (
+    (() => {
+      const names = nameFor(selected);
+      return (
+        <div className="flex-1 min-w-0 space-y-4 rounded-xl border border-mid-gray/20 p-5">
+          <div className="space-y-1">
+            <div className="flex items-baseline gap-2 text-lg font-semibold">
+              <span className="shrink-0">{titlePrefix(selected)} -</span>
+              {editingTitle !== null ? (
+                <input
+                  autoFocus
+                  className="flex-1 min-w-0 bg-transparent border-b border-mid-gray/40 focus:outline-none"
+                  placeholder={t("meetings.detail.namePlaceholder")}
+                  value={editingTitle}
+                  onChange={(e) => setEditingTitle(e.target.value)}
+                  onBlur={saveTitle}
+                  onKeyDown={(e) => e.key === "Enter" && saveTitle()}
+                />
+              ) : (
+                <button
+                  type="button"
+                  className={`min-w-0 text-left hover:underline ${
+                    selected.name ? "" : "text-mid-gray font-normal italic"
+                  }`}
+                  title={t("meetings.detail.rename")}
+                  onClick={() => setEditingTitle(selected.name)}
+                >
+                  {selected.name || t("meetings.detail.namePlaceholder")}
+                </button>
+              )}
+            </div>
+            <p className="text-xs text-mid-gray">
+              {formatDate(selected.started_at)} ·{" "}
+              {formatTs(selected.ended_at - selected.started_at)}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {selected.audio_available ? (
+              <AudioPlayerGroup>
+                <AudioPlayer
+                  ref={playerRef}
+                  onLoadRequest={loadAudio}
+                  onTimeUpdate={setPlayhead}
+                  className="flex-1 min-w-48"
+                />
+              </AudioPlayerGroup>
+            ) : (
+              <p className="flex-1 min-w-48 inline-flex items-center gap-2 text-sm text-mid-gray">
+                <VolumeX size={14} />
+                {t("meetings.detail.audioDeleted")}
+              </p>
+            )}
+            <Button variant="secondary" size="sm" onClick={copyMeeting}>
+              <span className="inline-flex items-center gap-1">
+                <Copy size={14} />
+                {t("meetings.detail.copy")}
+              </span>
+            </Button>
+            <Button variant="secondary" size="sm" onClick={saveMarkdown}>
+              <span className="inline-flex items-center gap-1">
+                <Download size={14} />
+                {t("meetings.detail.save")}
+              </span>
+            </Button>
+            {selected.audio_available && (
+              <Button variant="danger-ghost" size="sm" onClick={deleteAudio}>
+                <span className="inline-flex items-center gap-1">
+                  <VolumeX size={14} />
+                  {t("meetings.detail.deleteAudio")}
+                </span>
+              </Button>
+            )}
+            <Button variant="danger-ghost" size="sm" onClick={deleteMeeting}>
+              <span className="inline-flex items-center gap-1">
+                <Trash2 size={14} />
+                {t("meetings.detail.delete")}
+              </span>
+            </Button>
+          </div>
+          {selected.audio_available && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+              <label className="inline-flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="accent-logo-primary"
+                  checked={selected.keep_audio}
+                  onChange={(e) => setKeepAudio(e.target.checked)}
+                />
+                {t("meetings.detail.keepAudio")}
+              </label>
+              <span className="text-mid-gray">
+                {selected.audio_expires_at != null
+                  ? t("meetings.detail.audioExpires", {
+                      date: formatDate(selected.audio_expires_at),
+                    })
+                  : t("meetings.detail.audioKept")}
+              </span>
+            </div>
+          )}
+          {notice && <p className="text-xs text-mid-gray">{notice}</p>}
+          {error && <p className="text-xs text-red-400">{error}</p>}
+          <SpeakerGrid
+            utterances={selected.utterances}
+            nameFor={names}
+            onJump={jumpTo}
+            onRename={startRenameSpeaker}
+          />
+          <p className="text-xs text-mid-gray">
+            {selected.audio_available
+              ? t("meetings.detail.renameSpeakerHint")
+              : t("meetings.detail.renameSpeakerHintNoAudio")}
+          </p>
+          {editingSpeaker && (
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-mid-gray">
+                {t("meetings.detail.renameSpeakerPrompt", {
+                  speaker: genericName(editingSpeaker.speaker),
+                })}
+              </label>
               <input
                 autoFocus
-                className="flex-1 min-w-0 bg-transparent border-b border-mid-gray/40 focus:outline-none"
-                placeholder={t("meetings.detail.namePlaceholder")}
-                value={editingTitle}
-                onChange={(e) => setEditingTitle(e.target.value)}
-                onBlur={saveTitle}
-                onKeyDown={(e) => e.key === "Enter" && saveTitle()}
+                className="flex-1 bg-transparent border-b border-mid-gray/40 text-sm focus:outline-none"
+                value={editingSpeaker.name}
+                onChange={(e) =>
+                  setEditingSpeaker({ ...editingSpeaker, name: e.target.value })
+                }
+                onBlur={saveSpeakerName}
+                onKeyDown={(e) => e.key === "Enter" && saveSpeakerName()}
               />
-            ) : (
-              <button
-                type="button"
-                className={`min-w-0 text-left hover:underline ${
-                  selected.name ? "" : "text-mid-gray font-normal italic"
-                }`}
-                title={t("meetings.detail.rename")}
-                onClick={() => setEditingTitle(selected.name)}
-              >
-                {selected.name || t("meetings.detail.namePlaceholder")}
-              </button>
-            )}
-          </div>
-          <p className="text-xs text-mid-gray">
-            {formatDate(selected.started_at)} ·{" "}
-            {formatTs(selected.ended_at - selected.started_at)}
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {selected.audio_available ? (
-            <AudioPlayerGroup>
-              <AudioPlayer
-                ref={playerRef}
-                onLoadRequest={loadAudio}
-                onTimeUpdate={setPlayhead}
-                className="flex-1 min-w-48"
-              />
-            </AudioPlayerGroup>
-          ) : (
-            <p className="flex-1 min-w-48 inline-flex items-center gap-2 text-sm text-mid-gray">
-              <VolumeX size={14} />
-              {t("meetings.detail.audioDeleted")}
-            </p>
-          )}
-          <Button variant="secondary" size="sm" onClick={copyMeeting}>
-            <span className="inline-flex items-center gap-1">
-              <Copy size={14} />
-              {t("meetings.detail.copy")}
-            </span>
-          </Button>
-          <Button variant="secondary" size="sm" onClick={saveMarkdown}>
-            <span className="inline-flex items-center gap-1">
-              <Download size={14} />
-              {t("meetings.detail.save")}
-            </span>
-          </Button>
-          {selected.audio_available && (
-            <Button variant="danger-ghost" size="sm" onClick={deleteAudio}>
-              <span className="inline-flex items-center gap-1">
-                <VolumeX size={14} />
-                {t("meetings.detail.deleteAudio")}
-              </span>
-            </Button>
-          )}
-          <Button variant="danger-ghost" size="sm" onClick={deleteMeeting}>
-            <span className="inline-flex items-center gap-1">
-              <Trash2 size={14} />
-              {t("meetings.detail.delete")}
-            </span>
-          </Button>
-        </div>
-        {selected.audio_available && (
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-            <label className="inline-flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                className="accent-logo-primary"
-                checked={selected.keep_audio}
-                onChange={(e) => setKeepAudio(e.target.checked)}
-              />
-              {t("meetings.detail.keepAudio")}
-            </label>
-            <span className="text-mid-gray">
-              {selected.audio_expires_at != null
-                ? t("meetings.detail.audioExpires", {
-                    date: formatDate(selected.audio_expires_at),
-                  })
-                : t("meetings.detail.audioKept")}
-            </span>
-          </div>
-        )}
-        {notice && <p className="text-xs text-mid-gray">{notice}</p>}
-        {error && <p className="text-xs text-red-400">{error}</p>}
-        <SpeakerGrid
-          utterances={selected.utterances}
-          nameFor={names}
-          onJump={jumpTo}
-          onRename={startRenameSpeaker}
-        />
-        <p className="text-xs text-mid-gray">
-          {selected.audio_available
-            ? t("meetings.detail.renameSpeakerHint")
-            : t("meetings.detail.renameSpeakerHintNoAudio")}
-        </p>
-        {editingSpeaker && (
-          <div className="flex items-center gap-2">
-            <label className="text-xs text-mid-gray">
-              {t("meetings.detail.renameSpeakerPrompt", {
-                speaker: genericName(editingSpeaker.speaker),
-              })}
-            </label>
-            <input
-              autoFocus
-              className="flex-1 bg-transparent border-b border-mid-gray/40 text-sm focus:outline-none"
-              value={editingSpeaker.name}
-              onChange={(e) =>
-                setEditingSpeaker({ ...editingSpeaker, name: e.target.value })
-              }
-              onBlur={saveSpeakerName}
-              onKeyDown={(e) => e.key === "Enter" && saveSpeakerName()}
-            />
-          </div>
-        )}
-        <Transcript
-          utterances={selected.utterances}
-          nameFor={names}
-          onSeek={
-            selected.audio_available
-              ? (seconds) => playerRef.current?.seekTo(seconds)
-              : undefined
-          }
-          activeTime={playhead || null}
-          onSpeakerClick={startRenameSpeaker}
-        />
-      </div>
-    );
-  }
-
-  // ---- Main view ------------------------------------------------------------
-  return (
-    <div className="max-w-3xl w-full mx-auto space-y-6">
-      <SettingsGroup
-        title={t("meetings.title")}
-        description={t("meetings.description")}
-      >
-        {job ? (
-          <div className="p-4 flex items-center gap-3">
-            <Loader2 size={16} className="animate-spin text-logo-primary" />
-            <div className="flex-1 space-y-1">
-              <p className="text-sm">
-                {t("meetings.diarize.running", {
-                  percent: Math.round(job.progress * 100),
-                })}
-              </p>
-              <div className="h-1 rounded bg-mid-gray/20 overflow-hidden">
-                <div
-                  className="h-full bg-logo-primary transition-[width]"
-                  style={{ width: `${Math.round(job.progress * 100)}%` }}
-                />
-              </div>
             </div>
-            <Button variant="secondary" size="sm" onClick={cancelJob}>
-              <span className="inline-flex items-center gap-1">
-                <X size={14} />
-                {t("meetings.diarize.cancel")}
-              </span>
-            </Button>
-          </div>
-        ) : (
-          <p className="p-4 text-sm text-mid-gray">{t("meetings.howTo")}</p>
-        )}
-      </SettingsGroup>
+          )}
+          <Transcript
+            utterances={selected.utterances}
+            nameFor={names}
+            onSeek={
+              selected.audio_available
+                ? (seconds) => playerRef.current?.seekTo(seconds)
+                : undefined
+            }
+            activeTime={playhead || null}
+            onSpeakerClick={startRenameSpeaker}
+          />
+        </div>
+      );
+    })()
+  ) : (
+    <div className="flex-1 min-w-0 flex items-center justify-center rounded-xl border border-dashed border-mid-gray/30 p-10 text-sm text-mid-gray text-center">
+      {t("meetings.detail.selectPrompt")}
+    </div>
+  );
 
-      {models && !models.ready && (
+  // ---- Master / detail layout -------------------------------------------
+  return (
+    <div className="flex w-full max-w-6xl gap-4 items-start">
+      <div className="w-80 shrink-0 space-y-4">
         <SettingsGroup
-          title={t("meetings.models.title")}
-          description={t("meetings.models.description")}
+          title={t("meetings.title")}
+          description={t("meetings.description")}
         >
-          <div className="p-4">
-            <Button
-              variant="primary"
-              disabled={models.downloading}
-              onClick={download}
-            >
-              {models.downloading
-                ? t("meetings.models.downloading", { percent })
-                : t("meetings.models.download")}
-            </Button>
-          </div>
-        </SettingsGroup>
-      )}
-
-      {error && <p className="text-xs text-red-400">{error}</p>}
-
-      <SettingsGroup title={t("meetings.list.title")}>
-        {meetings.length === 0 ? (
-          <p className="p-4 text-sm text-mid-gray">
-            {t("meetings.list.empty")}
-          </p>
-        ) : (
-          meetings.map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              className="w-full text-left px-4 py-3 hover:bg-mid-gray/10 border-b border-mid-gray/10 last:border-b-0"
-              onClick={() => openMeeting(m.id)}
-            >
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="text-sm font-medium">{m.title}</span>
-                <span className="inline-flex items-center gap-2 shrink-0 text-xs text-mid-gray">
-                  {formatTs(m.ended_at - m.started_at)} ·{" "}
-                  {t("meetings.list.speakers", { count: m.speaker_count })}
-                  {!m.audio_available ? (
-                    <span title={t("meetings.list.audioDeleted")}>
-                      <VolumeX size={14} className="text-mid-gray/60" />
-                    </span>
-                  ) : m.keep_audio ? (
-                    <span
-                      className="inline-flex items-center text-logo-primary"
-                      title={t("meetings.list.audioKept")}
-                    >
-                      <Volume2 size={14} />
-                      <Lock size={10} />
-                    </span>
-                  ) : (
-                    <span
-                      className="text-logo-primary"
-                      title={t("meetings.list.audioAvailable", {
-                        date: formatDate(m.audio_expires_at ?? m.started_at),
-                      })}
-                    >
-                      <Volume2 size={14} />
-                    </span>
-                  )}
-                </span>
+          {job ? (
+            <div className="p-4 flex items-center gap-3">
+              <Loader2 size={16} className="animate-spin text-logo-primary" />
+              <div className="flex-1 space-y-1">
+                <p className="text-sm">
+                  {t("meetings.diarize.running", {
+                    percent: Math.round(job.progress * 100),
+                  })}
+                </p>
+                <div className="h-1 rounded bg-mid-gray/20 overflow-hidden">
+                  <div
+                    className="h-full bg-logo-primary transition-[width]"
+                    style={{ width: `${Math.round(job.progress * 100)}%` }}
+                  />
+                </div>
               </div>
-              <p className="text-xs text-mid-gray truncate">{m.preview}</p>
-            </button>
-          ))
+              <Button variant="secondary" size="sm" onClick={cancelJob}>
+                <span className="inline-flex items-center gap-1">
+                  <X size={14} />
+                  {t("meetings.diarize.cancel")}
+                </span>
+              </Button>
+            </div>
+          ) : (
+            <p className="p-4 text-sm text-mid-gray">{t("meetings.howTo")}</p>
+          )}
+        </SettingsGroup>
+
+        {models && !models.ready && (
+          <SettingsGroup
+            title={t("meetings.models.title")}
+            description={t("meetings.models.description")}
+          >
+            <div className="p-4">
+              <Button
+                variant="primary"
+                disabled={models.downloading}
+                onClick={download}
+              >
+                {models.downloading
+                  ? t("meetings.models.downloading", { percent })
+                  : t("meetings.models.download")}
+              </Button>
+            </div>
+          </SettingsGroup>
         )}
-      </SettingsGroup>
+
+        {error && <p className="text-xs text-red-400">{error}</p>}
+
+        <SettingsGroup title={t("meetings.list.title")}>
+          {meetings.length === 0 ? (
+            <p className="p-4 text-sm text-mid-gray">
+              {t("meetings.list.empty")}
+            </p>
+          ) : (
+            meetings.map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                aria-current={selected?.id === m.id ? "true" : undefined}
+                className={`w-full text-left px-4 py-3 border-b border-mid-gray/10 last:border-b-0 transition-colors ${
+                  selected?.id === m.id
+                    ? "bg-logo-primary/15"
+                    : "hover:bg-mid-gray/10"
+                }`}
+                onClick={() => openMeeting(m.id)}
+              >
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-sm font-medium">{m.title}</span>
+                  <span className="inline-flex items-center gap-2 shrink-0 text-xs text-mid-gray">
+                    {formatTs(m.ended_at - m.started_at)} ·{" "}
+                    {t("meetings.list.speakers", { count: m.speaker_count })}
+                    {!m.audio_available ? (
+                      <span title={t("meetings.list.audioDeleted")}>
+                        <VolumeX size={14} className="text-mid-gray/60" />
+                      </span>
+                    ) : m.keep_audio ? (
+                      <span
+                        className="inline-flex items-center text-logo-primary"
+                        title={t("meetings.list.audioKept")}
+                      >
+                        <Volume2 size={14} />
+                        <Lock size={10} />
+                      </span>
+                    ) : (
+                      <span
+                        className="text-logo-primary"
+                        title={t("meetings.list.audioAvailable", {
+                          date: formatDate(m.audio_expires_at ?? m.started_at),
+                        })}
+                      >
+                        <Volume2 size={14} />
+                      </span>
+                    )}
+                  </span>
+                </div>
+                <p className="text-xs text-mid-gray truncate">{m.preview}</p>
+              </button>
+            ))
+          )}
+        </SettingsGroup>
+      </div>
+      {detailView}
     </div>
   );
 };

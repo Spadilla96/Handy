@@ -671,7 +671,7 @@ fn default_sound_theme() -> SoundTheme {
 }
 
 fn default_theme() -> Theme {
-    Theme::System
+    Theme::Dark
 }
 
 fn default_post_process_enabled() -> bool {

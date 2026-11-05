@@ -9,7 +9,6 @@ import {
   Cpu,
   Users,
 } from "lucide-react";
-import HandyTextLogo from "./icons/HandyTextLogo";
 import HandyHand from "./icons/HandyHand";
 import { useSettings } from "../hooks/useSettings";
 import {
@@ -91,6 +90,8 @@ export const SECTIONS_CONFIG = {
   },
 } as const satisfies Record<string, SectionConfig>;
 
+const MAIN_SECTION_IDS: SidebarSection[] = ["general", "history", "meetings"];
+
 interface SidebarProps {
   activeSection: SidebarSection;
   onSectionChange: (section: SidebarSection) => void;
@@ -107,35 +108,48 @@ export const Sidebar: React.FC<SidebarProps> = ({
     .filter(([_, config]) => config.enabled(settings))
     .map(([id, config]) => ({ id: id as SidebarSection, ...config }));
 
-  return (
-    <div className="flex flex-col w-40 h-full border-e border-mid-gray/20 items-center px-2">
-      <HandyTextLogo width={120} className="m-4" />
-      <div className="flex flex-col w-full items-center gap-1 pt-2 border-t border-mid-gray/20">
-        {availableSections.map((section) => {
-          const Icon = section.icon;
-          const isActive = activeSection === section.id;
+  // Primary content areas sit at the top of the rail; configuration pages
+  // are grouped at the bottom.
+  const mainSections = availableSections.filter((s) =>
+    MAIN_SECTION_IDS.includes(s.id),
+  );
+  const footerSections = availableSections.filter(
+    (s) => !MAIN_SECTION_IDS.includes(s.id),
+  );
 
-          return (
-            <div
-              key={section.id}
-              className={`flex gap-2 items-center p-2 w-full rounded-lg cursor-pointer transition-colors ${
-                isActive
-                  ? "bg-logo-primary/80"
-                  : "hover:bg-mid-gray/20 hover:opacity-100 opacity-85"
-              }`}
-              onClick={() => onSectionChange(section.id)}
-            >
-              <Icon width={24} height={24} className="shrink-0" />
-              <p
-                className="text-sm font-medium truncate"
-                title={t(section.labelKey)}
-              >
-                {t(section.labelKey)}
-              </p>
-            </div>
-          );
-        })}
-      </div>
-    </div>
+  const renderItem = (section: (typeof availableSections)[number]) => {
+    const Icon = section.icon;
+    const isActive = activeSection === section.id;
+    return (
+      <button
+        key={section.id}
+        type="button"
+        aria-current={isActive ? "page" : undefined}
+        title={t(section.labelKey)}
+        onClick={() => onSectionChange(section.id)}
+        className={`flex flex-col items-center gap-1 w-full py-2 px-1 rounded-xl cursor-pointer transition-colors ${
+          isActive
+            ? "bg-logo-primary/15 text-logo-primary"
+            : "text-text/70 hover:bg-mid-gray/15 hover:text-text"
+        }`}
+      >
+        <Icon width={22} height={22} className="shrink-0" />
+        <span className="text-[11px] leading-tight font-medium w-full truncate text-center">
+          {t(section.labelKey)}
+        </span>
+      </button>
+    );
+  };
+
+  return (
+    <nav
+      aria-label={t("sidebar.navigation", { defaultValue: "Navigation" })}
+      className="flex flex-col w-[84px] shrink-0 h-full border-e border-mid-gray/20 items-center px-2 py-3 gap-1"
+    >
+      <HandyHand width={36} height={36} className="mb-3 mt-1" />
+      {mainSections.map(renderItem)}
+      <div className="flex-1" />
+      {footerSections.map(renderItem)}
+    </nav>
   );
 };

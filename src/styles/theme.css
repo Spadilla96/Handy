@@ -4,15 +4,16 @@
   /* Palette source of truth. Each themed color is defined once as a
      light/dark pair; the active tokens below and the `data-theme` overrides
      in App.css reference these, so a hex value lives in exactly one place. */
+  /* Honda-inspired palette: red accent on near-black / white neutrals. */
   --light-color-text: #0f0f0f;
   --light-color-background: #fbfbfb;
-  --light-color-logo-primary: #faa2ca;
-  --light-color-logo-stroke: #382731;
+  --light-color-logo-primary: #cc0000;
+  --light-color-logo-stroke: #3a0f12;
 
-  --dark-color-text: #fbfbfb;
-  --dark-color-background: #2c2b29;
-  --dark-color-logo-primary: #f28cbb;
-  --dark-color-logo-stroke: #fad1ed;
+  --dark-color-text: #f2f2f3;
+  --dark-color-background: #111113;
+  --dark-color-logo-primary: #e5333f;
+  --dark-color-logo-stroke: #ffd0d3;
 
   /* Semantic status colors. First used by SecureInputWarning; intended to
      replace the ad-hoc yellow-500/red-500 usages (e.g. ui/Alert.tsx) over
@@ -23,7 +24,7 @@
   --dark-color-error: #f87171;
 
   /* Tokens that do not change between light and dark */
-  --color-background-ui: #da5893;
+  --color-background-ui: #cc0000;
   --color-text-stroke: #f6f6f6;
   --color-mid-gray: #808080;
 

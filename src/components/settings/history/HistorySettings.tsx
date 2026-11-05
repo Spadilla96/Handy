@@ -7,6 +7,7 @@ import {
   FolderOpen,
   Loader2,
   RotateCcw,
+  Search,
   Star,
   Trash2,
   Users,
@@ -20,7 +21,7 @@ import {
   type HistoryUpdatePayload,
 } from "@/bindings";
 import { useOsType } from "@/hooks/useOsType";
-import { formatDateTime } from "@/utils/dateFormat";
+import { formatDate, formatDateTime } from "@/utils/dateFormat";
 import { AudioPlayer, AudioPlayerGroup } from "../../ui/AudioPlayer";
 import { Button } from "../../ui/Button";
 import { copyToClipboard } from "./clipboard";
@@ -154,8 +155,10 @@ const OpenRecordingsButton: React.FC<OpenRecordingsButtonProps> = ({
 );
 
 export const HistorySettings: React.FC = () => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const osType = useOsType();
+  const [query, setQuery] = useState("");
+  const [onlySaved, setOnlySaved] = useState(false);
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [hasMore, setHasMore] = useState(true);
@@ -320,64 +323,175 @@ export const HistorySettings: React.FC = () => {
     }
   };
 
+  // Search and the favorites filter run over the loaded pages; infinite
+  // scroll keeps loading older pages while the sentinel stays in view.
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const visibleEntries = entries.filter((entry) => {
+    if (onlySaved && !entry.saved) return false;
+    if (!normalizedQuery) return true;
+    return [entry.transcription_text, entry.post_processed_text, entry.title]
+      .filter((text): text is string => typeof text === "string")
+      .some((text) => text.toLocaleLowerCase().includes(normalizedQuery));
+  });
+  const dayLabels = {
+    today: t("settings.history.today"),
+    yesterday: t("settings.history.yesterday"),
+  };
+  const groups = groupByDay(visibleEntries, (unix) =>
+    dayLabel(unix, i18n.language, dayLabels),
+  );
+
   let content: React.ReactNode;
 
   if (loading) {
     content = (
-      <div className="px-4 py-3 text-center text-text/60">
+      <div className="px-4 py-6 text-center text-text/60 rounded-xl border border-mid-gray/20">
         {t("settings.history.loading")}
       </div>
     );
   } else if (entries.length === 0) {
     content = (
-      <div className="px-4 py-3 text-center text-text/60">
+      <div className="px-4 py-6 text-center text-text/60 rounded-xl border border-mid-gray/20">
         {t("settings.history.empty")}
       </div>
     );
   } else {
     content = (
       <>
-        <AudioPlayerGroup>
-          <div className="divide-y divide-mid-gray/20">
-            {entries.map((entry) => (
-              <HistoryEntryComponent
-                key={entry.id}
-                entry={entry}
-                onToggleSaved={() => toggleSaved(entry.id)}
-                onCopyText={() => copyToClipboard(entry.transcription_text)}
-                getAudioUrl={getAudioUrl}
-                deleteAudio={deleteAudioEntry}
-                retryTranscription={retryHistoryEntry}
-              />
-            ))}
+        {groups.length === 0 ? (
+          <div className="px-4 py-6 text-center text-text/60 rounded-xl border border-dashed border-mid-gray/30">
+            {t("settings.history.noMatches")}
           </div>
-        </AudioPlayerGroup>
+        ) : (
+          <AudioPlayerGroup>
+            <div className="space-y-5">
+              {groups.map((group) => (
+                <section key={group.key} className="space-y-2">
+                  <h3 className="px-1 text-xs font-semibold uppercase tracking-wide text-mid-gray">
+                    {group.label}
+                  </h3>
+                  <div className="rounded-xl border border-mid-gray/20 divide-y divide-mid-gray/15 overflow-visible">
+                    {group.items.map((entry) => (
+                      <HistoryEntryComponent
+                        key={entry.id}
+                        entry={entry}
+                        onToggleSaved={() => toggleSaved(entry.id)}
+                        onCopyText={() =>
+                          copyToClipboard(entry.transcription_text)
+                        }
+                        getAudioUrl={getAudioUrl}
+                        deleteAudio={deleteAudioEntry}
+                        retryTranscription={retryHistoryEntry}
+                      />
+                    ))}
+                  </div>
+                </section>
+              ))}
+            </div>
+          </AudioPlayerGroup>
+        )}
         {/* Sentinel for infinite scroll */}
         <div ref={sentinelRef} className="h-1" />
       </>
     );
   }
 
+  const chipClass = (active: boolean) =>
+    `h-8 px-3 rounded-full text-sm font-medium border transition-colors cursor-pointer ${
+      active
+        ? "bg-text text-background border-text"
+        : "border-mid-gray/30 text-text/80 hover:bg-mid-gray/10"
+    }`;
+
   return (
-    <div className="max-w-3xl w-full mx-auto space-y-6">
-      <div className="space-y-2">
-        <div className="px-4 flex items-center justify-between">
-          <div>
-            <h2 className="text-xs font-medium text-mid-gray uppercase tracking-wide">
-              {t("settings.history.title")}
-            </h2>
-          </div>
-          <OpenRecordingsButton
-            onClick={openRecordingsFolder}
-            label={t("settings.history.openFolder")}
+    <div className="max-w-3xl w-full mx-auto space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-2 flex-1 min-w-56 h-9 px-3 rounded-lg border border-mid-gray/30 bg-mid-gray/5 focus-within:border-logo-primary">
+          <Search className="w-4 h-4 text-mid-gray shrink-0" />
+          <span className="sr-only">{t("settings.history.search")}</span>
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={t("settings.history.search")}
+            className="flex-1 min-w-0 bg-transparent text-sm focus:outline-none"
           />
+        </label>
+        <div
+          role="group"
+          aria-label={t("settings.history.filter")}
+          className="flex gap-1"
+        >
+          <button
+            type="button"
+            aria-pressed={!onlySaved}
+            className={chipClass(!onlySaved)}
+            onClick={() => setOnlySaved(false)}
+          >
+            {t("settings.history.filterAll")}
+          </button>
+          <button
+            type="button"
+            aria-pressed={onlySaved}
+            className={chipClass(onlySaved)}
+            onClick={() => setOnlySaved(true)}
+          >
+            {t("settings.history.filterSaved")}
+          </button>
         </div>
-        <div className="bg-background border border-mid-gray/20 rounded-lg overflow-visible">
-          {content}
-        </div>
+        <OpenRecordingsButton
+          onClick={openRecordingsFolder}
+          label={t("settings.history.openFolder")}
+        />
       </div>
+      {content}
     </div>
   );
+};
+
+interface DayGroup {
+  key: string;
+  label: string;
+  items: HistoryEntry[];
+}
+
+/** Groups entries (already newest first) by local calendar day. */
+const groupByDay = (
+  entries: HistoryEntry[],
+  labelFor: (unix: number) => string,
+): DayGroup[] => {
+  const groups: DayGroup[] = [];
+  for (const entry of entries) {
+    const d = new Date(Number(entry.timestamp) * 1000);
+    const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    const last = groups[groups.length - 1];
+    if (last && last.key === key) {
+      last.items.push(entry);
+    } else {
+      groups.push({
+        key,
+        label: labelFor(Number(entry.timestamp)),
+        items: [entry],
+      });
+    }
+  }
+  return groups;
+};
+
+const dayLabel = (
+  unix: number,
+  locale: string,
+  labels: { today: string; yesterday: string },
+): string => {
+  const date = new Date(unix * 1000);
+  const startOfDay = (d: Date) =>
+    new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const diffDays = Math.round(
+    (startOfDay(new Date()) - startOfDay(date)) / 86_400_000,
+  );
+  if (diffDays === 0) return labels.today;
+  if (diffDays === 1) return labels.yesterday;
+  return formatDate(String(unix), locale);
 };
 
 interface HistoryEntryProps {
@@ -445,12 +559,21 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
   };
 
   const formattedDate = formatDateTime(String(entry.timestamp), i18n.language);
+  const formattedTime = new Intl.DateTimeFormat(i18n.language, {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(Number(entry.timestamp) * 1000));
 
   return (
-    <div className="px-4 py-2 pb-5 flex flex-col gap-3">
+    <div className="group px-4 py-3 flex flex-col gap-2 transition-colors hover:bg-mid-gray/5">
       <div className="flex justify-between items-center">
-        <p className="text-sm font-medium">{formattedDate}</p>
-        <div className="flex items-center">
+        <p
+          className="text-xs font-semibold tabular-nums text-mid-gray"
+          title={formattedDate}
+        >
+          {formattedTime}
+        </p>
+        <div className="flex items-center opacity-60 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
           <IconButton
             onClick={handleCopyText}
             disabled={!hasTranscription || retrying}
@@ -505,7 +628,7 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
       </div>
 
       <p
-        className={`italic text-sm pb-2 ${
+        className={`text-sm leading-relaxed pb-1 ${
           retrying
             ? ""
             : hasTranscription
