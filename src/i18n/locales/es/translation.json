@@ -775,9 +775,19 @@
       "speakers": "{{count}} hablantes",
       "audioAvailable": "Grabación disponible (se elimina el {{date}})",
       "audioKept": "Grabación conservada",
-      "audioDeleted": "Grabación eliminada"
+      "audioDeleted": "Grabación eliminada",
+      "unnamed": "Reunión sin título",
+      "info": "Cómo funcionan las reuniones"
+    },
+    "groups": {
+      "today": "Hoy",
+      "yesterday": "Ayer",
+      "thisWeek": "Esta semana"
     },
     "detail": {
+      "more": "Más acciones",
+      "keepShort": "Conservar",
+      "expiresShort": "Se elimina el {{date}}",
       "back": "Volver",
       "selectPrompt": "Selecciona una reunión para ver su transcripción.",
       "rename": "Nombrar esta reunión",

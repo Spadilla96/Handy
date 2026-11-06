@@ -775,9 +775,19 @@
       "speakers": "{{count}} speakers",
       "audioAvailable": "Recording available (deleted on {{date}})",
       "audioKept": "Recording kept",
-      "audioDeleted": "Recording deleted"
+      "audioDeleted": "Recording deleted",
+      "unnamed": "Untitled meeting",
+      "info": "How meetings work"
+    },
+    "groups": {
+      "today": "Today",
+      "yesterday": "Yesterday",
+      "thisWeek": "This week"
     },
     "detail": {
+      "more": "More actions",
+      "keepShort": "Keep",
+      "expiresShort": "Deleted on {{date}}",
       "back": "Back",
       "selectPrompt": "Select a meeting to see its transcript.",
       "rename": "Name this meeting",
