@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Mic, Square, X } from "lucide-react";
 import { commands } from "@/bindings";
 import { useRecordingStore } from "../stores/recordingStore";
+import { MarkMeetingButton } from "./meetings/MarkMeetingButton";
 
 const POLL_INTERVAL_MS = 500;
 const BAR_DELAYS_MS = [0, 120, 240, 60, 180, 300, 90, 210];
@@ -57,6 +58,7 @@ export const TopBar: React.FC<TopBarProps> = ({ title }) => {
     <header className="flex items-center gap-4 h-14 shrink-0 px-5 border-b border-mid-gray/20">
       <h1 className="text-base font-semibold truncate">{title}</h1>
       <div className="flex-1" />
+      {isRecording && <MarkMeetingButton />}
       {isRecording ? (
         <div
           role="status"

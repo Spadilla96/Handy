@@ -468,7 +468,13 @@
       "retranscribe": "फिर से ट्रांसक्राइब करें",
       "retranscribeError": "फिर से ट्रांसक्राइब नहीं किया जा सका. कृपया फिर से कोशिश करें.",
       "transcribing": "ट्रांसक्राइब हो रहा है...",
-      "transcriptionFailed": "ट्रांसक्रिप्शन नहीं हो सका. आप रीट्राई आइकन से फिर से ट्रांसक्राइब कर सकते हैं."
+      "transcriptionFailed": "ट्रांसक्रिप्शन नहीं हो सका. आप रीट्राई आइकन से फिर से ट्रांसक्राइब कर सकते हैं.",
+      "filterMeetings": "Meetings",
+      "selectEntry": "Select a recording to see it here",
+      "more": "More",
+      "deleteConfirm": "Confirm delete",
+      "wordCount": "{{count}} words",
+      "polished": "Post-processed"
     },
     "debug": {
       "title": "डिबग",
@@ -714,5 +720,14 @@
     "learnMore": "इसे कैसे ठीक करें",
     "recorderBlocked": "अभी शॉर्टकट रिकॉर्ड नहीं किए जा सकते — macOS Secure Input कुंजी इवेंट ब्लॉक कर रहा है. पहले Secure Input चेतावनी हल करें.",
     "dismiss": "खारिज करें"
+  },
+  "meetingMark": {
+    "button": "It's a meeting",
+    "tooltip": "Mark this recording as a meeting (separate speakers when it ends)",
+    "label": "Meeting",
+    "placeholder": "Meeting title (optional)",
+    "hint": "When the transcription finishes, speakers will be separated automatically.",
+    "remove": "Not a meeting",
+    "done": "Done"
   }
 }

@@ -11,6 +11,10 @@ import type {
 } from "@/bindings";
 import i18n, { syncLanguageFromSettings } from "@/i18n";
 import { getLanguageDirection } from "@/lib/utils/rtl";
+import {
+  initPendingMeetingSync,
+  usePendingMeetingStore,
+} from "@/stores/pendingMeetingStore";
 
 type OverlayState = "recording" | "streaming" | "transcribing" | "processing";
 
@@ -49,6 +53,13 @@ const RecordingOverlay: React.FC = () => {
   // keeps running either way). `micAvailable` is false for system-only audio.
   const [micEnabled, setMicEnabled] = useState(true);
   const [micAvailable, setMicAvailable] = useState(false);
+
+  const meetingOn = usePendingMeetingStore((s) => s.enabled);
+  const meetingName = usePendingMeetingStore((s) => s.name);
+
+  useEffect(() => {
+    initPendingMeetingSync();
+  }, []);
 
   const smoothedLevelsRef = useRef<number[]>(Array(16).fill(0));
   // When capture started, so the timer survives the overlay being minimized.
@@ -334,8 +345,41 @@ const RecordingOverlay: React.FC = () => {
     </button>
   );
 
+  // Flag this recording as a meeting; it is processed (speakers separated) once
+  // the direct transcription finishes. The title is set from the main window.
+  const meetingBtn = (
+    <button
+      className={`sx sx-small sx-meeting${meetingOn ? " on" : ""}`}
+      aria-label={t("meetingMark.tooltip")}
+      title={t("meetingMark.tooltip")}
+      aria-pressed={meetingOn}
+      onClick={() =>
+        usePendingMeetingStore.getState().set(!meetingOn, meetingName)
+      }
+    >
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <circle
+          cx="6"
+          cy="5.5"
+          r="2.4"
+          stroke="currentColor"
+          strokeWidth="1.4"
+          fill="none"
+        />
+        <path
+          d="M1.8 13 C1.8 10.6 3.6 9.4 6 9.4 C8.4 9.4 10.2 10.6 10.2 13 M10.6 3.4 C12 3.6 12.8 4.6 12.8 5.8 C12.8 7 12 8 10.8 8.2 M12 9.6 C13.6 10 14.4 11.2 14.4 13"
+          stroke="currentColor"
+          strokeWidth="1.4"
+          strokeLinecap="round"
+          fill="none"
+        />
+      </svg>
+    </button>
+  );
+
   const controls = (live: boolean, withMic = false) => (
     <>
+      {withMic && meetingBtn}
       {withMic && micAvailable && micBtn}
       {live && toggleBtn}
       {minimizeBtn}

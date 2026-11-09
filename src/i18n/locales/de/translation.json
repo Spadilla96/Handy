@@ -468,7 +468,13 @@
       "retranscribe": "Erneut transkribieren",
       "retranscribeError": "Erneute Transkription fehlgeschlagen. Bitte versuche es erneut.",
       "transcribing": "Transkribiere...",
-      "transcriptionFailed": "Transkription fehlgeschlagen. Du kannst über das Wiederholen-Symbol erneut transkribieren."
+      "transcriptionFailed": "Transkription fehlgeschlagen. Du kannst über das Wiederholen-Symbol erneut transkribieren.",
+      "filterMeetings": "Meetings",
+      "selectEntry": "Select a recording to see it here",
+      "more": "More",
+      "deleteConfirm": "Confirm delete",
+      "wordCount": "{{count}} words",
+      "polished": "Post-processed"
     },
     "debug": {
       "title": "Debug",
@@ -714,5 +720,14 @@
     "learnMore": "So behebst du das",
     "recorderBlocked": "Tastenkürzel können gerade nicht aufgezeichnet werden — macOS Secure Input blockiert Tastenereignisse. Behebe zuerst die Secure-Input-Warnung.",
     "dismiss": "Ausblenden"
+  },
+  "meetingMark": {
+    "button": "It's a meeting",
+    "tooltip": "Mark this recording as a meeting (separate speakers when it ends)",
+    "label": "Meeting",
+    "placeholder": "Meeting title (optional)",
+    "hint": "When the transcription finishes, speakers will be separated automatically.",
+    "remove": "Not a meeting",
+    "done": "Done"
   }
 }

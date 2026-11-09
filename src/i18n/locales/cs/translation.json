@@ -468,7 +468,13 @@
       "retranscribe": "Přepsat znovu",
       "retranscribeError": "Opětovný přepis se nezdařil. Zkuste to prosím znovu.",
       "transcribing": "Přepisuji...",
-      "transcriptionFailed": "Přepis selhal. Můžete zkusit přepis znovu pomocí ikony opakování."
+      "transcriptionFailed": "Přepis selhal. Můžete zkusit přepis znovu pomocí ikony opakování.",
+      "filterMeetings": "Meetings",
+      "selectEntry": "Select a recording to see it here",
+      "more": "More",
+      "deleteConfirm": "Confirm delete",
+      "wordCount": "{{count}} words",
+      "polished": "Post-processed"
     },
     "debug": {
       "title": "Ladění",
@@ -714,5 +720,14 @@
     "learnMore": "Jak to vyřešit",
     "recorderBlocked": "Zkratky teď nelze nahrát — Secure Input v macOS blokuje události kláves. Nejprve vyřešte upozornění na Secure Input.",
     "dismiss": "Zavřít"
+  },
+  "meetingMark": {
+    "button": "It's a meeting",
+    "tooltip": "Mark this recording as a meeting (separate speakers when it ends)",
+    "label": "Meeting",
+    "placeholder": "Meeting title (optional)",
+    "hint": "When the transcription finishes, speakers will be separated automatically.",
+    "remove": "Not a meeting",
+    "done": "Done"
   }
 }

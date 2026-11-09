@@ -85,6 +85,7 @@ fn native_windows_machine() -> Option<u16> {
 /// Handles cancelling both recording and transcription operations and updates UI state.
 pub fn cancel_current_operation(app: &AppHandle) {
     info!("Initiating operation cancellation...");
+    crate::commands::meeting::clear_pending_meeting(app);
 
     // Unregister the cancel shortcut asynchronously
     shortcut::unregister_cancel_shortcut(app);

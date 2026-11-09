@@ -225,6 +225,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
         }
         Err(e) => log::error!("Failed to initialize meeting manager: {e:#}"),
     }
+    app_handle.manage(commands::meeting::PendingMeetingState::default());
     app_handle.manage(tray::TrayState::new());
     // Follows the Teams call mute button while recording (opt-in setting).
     managers::teams::start(app_handle);
@@ -777,6 +778,8 @@ pub fn run(cli_args: CliArgs) {
             commands::meeting::diarize_history_entry,
             commands::meeting::cancel_meeting_diarization,
             commands::meeting::get_diarization_job,
+            commands::meeting::set_pending_meeting,
+            commands::meeting::get_pending_meeting,
             commands::overlay::begin_overlay_drag,
             commands::overlay::minimize_overlay,
             commands::overlay::set_overlay_live_compact,

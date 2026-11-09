@@ -468,7 +468,13 @@
       "retranscribe": "Перетранскрибувати",
       "retranscribeError": "Не вдалося перетранскрибувати. Будь ласка, спробуйте ще раз.",
       "transcribing": "Транскрибування...",
-      "transcriptionFailed": "Транскрипція не вдалася. Ви можете перетранскрибувати за допомогою іконки повтору."
+      "transcriptionFailed": "Транскрипція не вдалася. Ви можете перетранскрибувати за допомогою іконки повтору.",
+      "filterMeetings": "Meetings",
+      "selectEntry": "Select a recording to see it here",
+      "more": "More",
+      "deleteConfirm": "Confirm delete",
+      "wordCount": "{{count}} words",
+      "polished": "Post-processed"
     },
     "debug": {
       "title": "Дебаг",
@@ -714,5 +720,14 @@
     "learnMore": "Як це виправити",
     "recorderBlocked": "Зараз неможливо записати комбінацію — Secure Input у macOS блокує події клавіш. Спершу усуньте попередження про Secure Input.",
     "dismiss": "Приховати"
+  },
+  "meetingMark": {
+    "button": "It's a meeting",
+    "tooltip": "Mark this recording as a meeting (separate speakers when it ends)",
+    "label": "Meeting",
+    "placeholder": "Meeting title (optional)",
+    "hint": "When the transcription finishes, speakers will be separated automatically.",
+    "remove": "Not a meeting",
+    "done": "Done"
   }
 }

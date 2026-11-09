@@ -239,7 +239,6 @@
     },
     "sound": {
       "title": "Sonido",
-
       "teamsMicSync": {
         "label": "Seguir el silencio de Teams",
         "description": "Durante una llamada de Teams, silencia y reactiva el micrófono de Handy cuando lo haces en Teams (solo mientras graba)"
@@ -506,7 +505,13 @@
       "filterSaved": "Favoritas",
       "noMatches": "Ninguna transcripción coincide con la búsqueda.",
       "today": "Hoy",
-      "yesterday": "Ayer"
+      "yesterday": "Ayer",
+      "filterMeetings": "Reuniones",
+      "selectEntry": "Selecciona una grabación para verla aquí",
+      "more": "Más",
+      "deleteConfirm": "Confirmar eliminación",
+      "wordCount": "{{count}} palabras",
+      "polished": "Post-procesado"
     },
     "debug": {
       "title": "Depuración",
@@ -825,5 +830,14 @@
       "view": "Ver",
       "failed": "No se pudo procesar la reunión: {{error}}"
     }
+  },
+  "meetingMark": {
+    "button": "Es una reunión",
+    "tooltip": "Marcar esta grabación como reunión (separar hablantes al terminar)",
+    "label": "Reunión",
+    "placeholder": "Título de la reunión (opcional)",
+    "hint": "Al terminar la transcripción, se separarán los hablantes automáticamente.",
+    "remove": "No es una reunión",
+    "done": "Listo"
   }
 }

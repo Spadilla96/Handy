@@ -592,7 +592,11 @@ impl MeetingManager {
     /// the worker is running; progress, completion and failure arrive as the
     /// `meeting-diarize-progress`, `meeting-saved` and `meeting-diarize-failed`
     /// events.
-    pub fn start_diarization(self: &Arc<Self>, entry: HistoryEntry) -> Result<()> {
+    pub fn start_diarization(
+        self: &Arc<Self>,
+        entry: HistoryEntry,
+        name: Option<String>,
+    ) -> Result<()> {
         let mut job_guard = self.job.lock().unwrap();
         if job_guard.is_some() {
             bail!("Another recording is already being processed as a meeting");
@@ -693,7 +697,13 @@ impl MeetingManager {
             let result = match (cancelled, outcome) {
                 (true, _) => Err(anyhow::anyhow!("cancelled")),
                 (false, Ok(utterances)) => {
-                    manager.save_meeting(&entry, &file_name, duration, utterances)
+                    manager.save_meeting(
+                        &entry,
+                        &file_name,
+                        duration,
+                        utterances,
+                        name.as_deref().unwrap_or(""),
+                    )
                 }
                 (false, Err(e)) => Err(e),
             };
@@ -797,9 +807,11 @@ impl MeetingManager {
         file_name: &str,
         duration: f64,
         utterances: Vec<Utterance>,
+        name: &str,
     ) -> Result<i64> {
         let started_at = entry.timestamp;
-        let title = base_title(started_at);
+        let name = name.trim();
+        let title = compose_title(started_at, name);
         let utterances: Vec<Utterance> = utterances
             .into_iter()
             .map(|mut u| {
@@ -809,7 +821,7 @@ impl MeetingManager {
             .collect();
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO meetings (started_at, ended_at, title, file_name, utterances_json, source_history_id, diarized_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO meetings (started_at, ended_at, title, file_name, utterances_json, source_history_id, diarized_at, name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 started_at,
                 started_at + duration.round() as i64,
@@ -817,7 +829,8 @@ impl MeetingManager {
                 file_name,
                 serde_json::to_string(&utterances)?,
                 entry.id,
-                chrono::Utc::now().timestamp()
+                chrono::Utc::now().timestamp(),
+                name
             ],
         )?;
         Ok(conn.last_insert_rowid())

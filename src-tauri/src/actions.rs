@@ -63,6 +63,37 @@ struct TranscribeAction {
 const TRANSCRIPTION_FIELD: &str = "transcription";
 
 /// Strip invisible Unicode characters that some LLMs may insert
+/// Kick off "process as meeting" for a recording that was flagged as a meeting
+/// while it was being recorded. Failures are reported through the same event
+/// the History button uses, and never block the direct transcription/paste.
+fn start_pending_meeting(
+    app: &AppHandle,
+    entry: crate::managers::history::HistoryEntry,
+    name: String,
+) {
+    use crate::managers::meeting::{err_string, DiarizeFailedEvent, MeetingManager};
+    let Some(meetings) = app.try_state::<Arc<MeetingManager>>() else {
+        return;
+    };
+    let meetings = meetings.inner().clone();
+    let app = app.clone();
+    let history_id = entry.id;
+    let name = Some(name).filter(|n| !n.trim().is_empty());
+    std::thread::spawn(move || {
+        if let Err(e) = meetings.start_diarization(entry, name) {
+            warn!("Could not process recording #{history_id} as a meeting: {e:#}");
+            let _ = app.emit(
+                "meeting-diarize-failed",
+                DiarizeFailedEvent {
+                    history_id,
+                    message: err_string(e),
+                    cancelled: false,
+                },
+            );
+        }
+    });
+}
+
 fn strip_invisible_chars(s: &str) -> String {
     s.replace(['\u{200B}', '\u{200C}', '\u{200D}', '\u{FEFF}'], "")
 }
@@ -822,15 +853,28 @@ impl ShortcutAction for TranscribeAction {
                             }
 
                             // Save to history if WAV was saved
+                            // Flagged as a meeting while recording? Always consume
+                            // the flag so it never leaks into the next recording.
+                            let pending_meeting =
+                                crate::commands::meeting::take_pending_meeting(&ah);
                             if wav_saved {
-                                if let Err(err) = hm.save_entry(
+                                match hm.save_entry(
                                     file_name,
                                     transcription,
                                     post_process,
                                     processed.post_processed_text.clone(),
                                     processed.post_process_prompt.clone(),
                                 ) {
-                                    error!("Failed to save history entry: {}", err);
+                                    Ok(entry) => {
+                                        if pending_meeting.enabled {
+                                            start_pending_meeting(
+                                                &ah,
+                                                entry,
+                                                pending_meeting.name,
+                                            );
+                                        }
+                                    }
+                                    Err(err) => error!("Failed to save history entry: {}", err),
                                 }
                             }
 

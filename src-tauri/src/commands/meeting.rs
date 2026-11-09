@@ -1,6 +1,8 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use tauri::{AppHandle, Manager};
+use serde::{Deserialize, Serialize};
+use specta::Type;
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::managers::history::HistoryManager;
 use crate::managers::meeting::{
@@ -112,10 +114,60 @@ pub async fn diarize_history_entry(app: AppHandle, id: i64) -> Result<(), String
         .map_err(err_string)?
         .ok_or_else(|| format!("History entry {id} not found"))?;
     let m = manager(&app);
-    tokio::task::spawn_blocking(move || m.start_diarization(entry))
+    tokio::task::spawn_blocking(move || m.start_diarization(entry, None))
         .await
         .map_err(|e| e.to_string())?
         .map_err(err_string)
+}
+
+/// A recording flagged mid-session as a meeting: once its direct transcription
+/// is saved, it is processed as a meeting (speaker separation) automatically.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Type)]
+pub struct PendingMeeting {
+    pub enabled: bool,
+    pub name: String,
+}
+
+#[derive(Default)]
+pub struct PendingMeetingState(pub Mutex<PendingMeeting>);
+
+/// Replace the pending state and tell every window.
+pub fn write_pending_meeting(app: &AppHandle, value: PendingMeeting) {
+    *app.state::<PendingMeetingState>().0.lock().unwrap() = value.clone();
+    let _ = app.emit("pending-meeting-changed", value);
+}
+
+/// Read and clear the flag (used when a recording ends).
+pub fn take_pending_meeting(app: &AppHandle) -> PendingMeeting {
+    let taken = std::mem::take(&mut *app.state::<PendingMeetingState>().0.lock().unwrap());
+    if taken.enabled || !taken.name.is_empty() {
+        let _ = app.emit("pending-meeting-changed", PendingMeeting::default());
+    }
+    taken
+}
+
+pub fn clear_pending_meeting(app: &AppHandle) {
+    let _ = take_pending_meeting(app);
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn set_pending_meeting(app: AppHandle, enabled: bool, name: String) {
+    write_pending_meeting(
+        &app,
+        PendingMeeting {
+            enabled,
+            name: if enabled { name } else { String::new() },
+        },
+    );
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_pending_meeting(app: AppHandle) -> PendingMeeting {
+    let state = app.state::<PendingMeetingState>();
+    let value = state.0.lock().unwrap().clone();
+    value
 }
 
 #[tauri::command]

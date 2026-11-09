@@ -387,14 +387,16 @@ function App() {
             <div
               ref={settingsScrollRef}
               className={`flex-1 min-h-0 ${
-                currentSection === "meetings"
+                currentSection === "meetings" || currentSection === "history"
                   ? "overflow-hidden"
                   : "overflow-y-auto"
               }`}
             >
               <div
                 className={`flex flex-col items-center p-4 gap-4 ${
-                  currentSection === "meetings" ? "h-full" : ""
+                  currentSection === "meetings" || currentSection === "history"
+                    ? "h-full"
+                    : ""
                 }`}
               >
                 <AccessibilityPermissions />

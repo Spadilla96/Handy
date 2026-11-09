@@ -905,6 +905,12 @@ async cancelMeetingDiarization() : Promise<void> {
 async getDiarizationJob() : Promise<DiarizationJob | null> {
     return await TAURI_INVOKE("get_diarization_job");
 },
+async setPendingMeeting(enabled: boolean, name: string) : Promise<void> {
+    await TAURI_INVOKE("set_pending_meeting", { enabled, name });
+},
+async getPendingMeeting() : Promise<PendingMeeting> {
+    return await TAURI_INVOKE("get_pending_meeting");
+},
 async beginOverlayDrag() : Promise<void> {
     await TAURI_INVOKE("begin_overlay_drag");
 },
@@ -1344,6 +1350,7 @@ export type TypingTool = "auto" | "wtype" | "kwtype" | "dotool" | "ydotool" | "x
 export type Utterance = { speaker: number; start: number; end: number; text: string; provisional?: boolean }
 export type MeetingModelsStatus = { ready: boolean; downloading: boolean; downloaded: number; total: number }
 export type MeetingSummary = { id: number; started_at: number; ended_at: number; title: string; name: string; speaker_count: number; preview: string; source_history_id: number | null; keep_audio: boolean; audio_available: boolean; audio_expires_at: number | null }
+export type PendingMeeting = { enabled: boolean; name: string }
 export type DiarizationJob = { history_id: number; progress: number; backend: string | null }
 export type MeetingSavedEvent = { history_id: number; meeting_id: number }
 export type DiarizeFailedEvent = { history_id: number; message: string; cancelled: boolean }
