@@ -225,6 +225,16 @@ impl MeetingManager {
         !file_name.is_empty() && self.recordings_dir().join(file_name).exists()
     }
 
+    /// History entry this meeting was diarized from, if any.
+    pub fn source_history_id_for(&self, id: i64) -> Result<Option<i64>> {
+        let conn = self.conn()?;
+        Ok(conn.query_row(
+            "SELECT source_history_id FROM meetings WHERE id = ?1",
+            params![id],
+            |r| r.get::<_, Option<i64>>(0),
+        )?)
+    }
+
     pub fn list(&self) -> Result<Vec<MeetingSummary>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(

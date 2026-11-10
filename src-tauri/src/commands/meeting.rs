@@ -101,6 +101,26 @@ pub fn save_meeting_markdown(app: AppHandle, id: i64) -> Result<String, String> 
         .map_err(err_string)
 }
 
+/// The original (non-diarized) transcription of a meeting, kept in the history
+/// entry it was created from.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_meeting_raw_transcript(app: AppHandle, id: i64) -> Result<String, String> {
+    let m = manager(&app);
+    let source = tokio::task::spawn_blocking(move || m.source_history_id_for(id))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(err_string)?
+        .ok_or_else(|| "no-source".to_string())?;
+    let history = app.state::<Arc<HistoryManager>>().inner().clone();
+    history
+        .get_entry_by_id(source)
+        .await
+        .map_err(err_string)?
+        .map(|e| e.transcription_text)
+        .ok_or_else(|| "no-source".to_string())
+}
+
 /// Start turning a history entry's recording into a meeting. Returns once the
 /// worker is running; the outcome arrives as `meeting-saved` or
 /// `meeting-diarize-failed`.

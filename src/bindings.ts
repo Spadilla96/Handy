@@ -883,6 +883,14 @@ async exportMeetingMarkdown(id: number) : Promise<Result<string, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async getMeetingRawTranscript(id: number) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_meeting_raw_transcript", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async saveMeetingMarkdown(id: number) : Promise<Result<string, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("save_meeting_markdown", { id }) };

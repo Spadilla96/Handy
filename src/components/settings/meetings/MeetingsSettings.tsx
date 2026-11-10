@@ -11,6 +11,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   Copy,
   Download,
+  FileText,
   Info,
   Loader2,
   Lock,
@@ -448,6 +449,18 @@ export const MeetingsSettings: React.FC = () => {
     }
   };
 
+  const copyRawMeeting = async () => {
+    if (!selected) return;
+    const res = await commands.getMeetingRawTranscript(selected.id);
+    if (res.status === "error") {
+      setError(t("meetings.detail.rawUnavailable"));
+      return;
+    }
+    if (await copyToClipboard(res.data)) {
+      setNotice(t("meetings.detail.copiedRaw"));
+    }
+  };
+
   const saveMarkdown = async () => {
     if (!selected) return;
     const res = await commands.saveMeetingMarkdown(selected.id);
@@ -578,6 +591,17 @@ export const MeetingsSettings: React.FC = () => {
                   <span className="inline-flex items-center gap-1">
                     <Copy size={14} />
                     {t("meetings.detail.copy")}
+                  </span>
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={copyRawMeeting}
+                  title={t("meetings.detail.copyRawTitle")}
+                >
+                  <span className="inline-flex items-center gap-1">
+                    <FileText size={14} />
+                    {t("meetings.detail.copyRaw")}
                   </span>
                 </Button>
                 <Button

@@ -774,6 +774,7 @@ pub fn run(cli_args: CliArgs) {
             commands::meeting::set_meeting_keep_audio,
             commands::meeting::get_meeting_audio_path,
             commands::meeting::export_meeting_markdown,
+            commands::meeting::get_meeting_raw_transcript,
             commands::meeting::save_meeting_markdown,
             commands::meeting::diarize_history_entry,
             commands::meeting::cancel_meeting_diarization,
