@@ -783,6 +783,7 @@ pub fn run(cli_args: CliArgs) {
             commands::overlay::begin_overlay_drag,
             commands::overlay::minimize_overlay,
             commands::overlay::set_overlay_live_compact,
+            commands::overlay::set_overlay_meeting_panel,
             commands::overlay::reset_overlay_position,
             commands::audio::get_available_output_devices,
             commands::audio::set_selected_output_device,

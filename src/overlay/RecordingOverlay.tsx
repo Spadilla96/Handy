@@ -1,5 +1,11 @@
 import { listen } from "@tauri-apps/api/event";
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import "./RecordingOverlay.css";
 import { commands, events } from "@/bindings";
@@ -61,6 +67,76 @@ const RecordingOverlay: React.FC = () => {
     initPendingMeetingSync();
   }, []);
 
+  // ---- Meeting title panel ----
+  // Opens from the pill when the recording is flagged as a meeting. The overlay
+  // window is normally non-focusable (so it never steals focus from the app the
+  // text is pasted into); the backend makes it focusable only while this panel is
+  // open, and gives focus back when it closes.
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const saveTimerRef = useRef<number | undefined>(undefined);
+  const draftRef = useRef("");
+  const panelOpenRef = useRef(false);
+  // Set once the input really has focus, so the window `blur` that closes the
+  // panel (user clicked another app) can't fire before focus ever arrived.
+  const panelArmedRef = useRef(false);
+
+  const closePanel = useCallback(() => {
+    if (!panelOpenRef.current) return;
+    panelOpenRef.current = false;
+    panelArmedRef.current = false;
+    window.clearTimeout(saveTimerRef.current);
+    // Persist whatever was typed (unless the flag was just removed).
+    const store = usePendingMeetingStore.getState();
+    if (store.enabled) void store.set(true, draftRef.current.trim());
+    setPanelOpen(false);
+    void commands.setOverlayMeetingPanel(false);
+  }, []);
+
+  const openPanel = () => {
+    panelOpenRef.current = true;
+    setPanelOpen(true);
+    void commands.setOverlayMeetingPanel(true);
+  };
+
+  const updateDraft = (value: string) => {
+    setDraft(value);
+    draftRef.current = value;
+    window.clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = window.setTimeout(() => {
+      void usePendingMeetingStore.getState().set(true, value.trim());
+    }, 300);
+  };
+
+  // Focus the input once the window has been resized and made focusable.
+  useEffect(() => {
+    if (!panelOpen) return;
+    const id = window.setTimeout(() => inputRef.current?.focus(), 80);
+    return () => window.clearTimeout(id);
+  }, [panelOpen]);
+
+  // Clicking into another app takes focus away from the overlay: close the panel.
+  useEffect(() => {
+    const onBlur = () => {
+      if (panelArmedRef.current) closePanel();
+    };
+    window.addEventListener("blur", onBlur);
+    return () => window.removeEventListener("blur", onBlur);
+  }, [closePanel]);
+
+  // Keep the draft in step with the flag when it is changed elsewhere (main window).
+  useEffect(() => {
+    if (panelOpen) return;
+    setDraft(meetingName);
+    draftRef.current = meetingName;
+  }, [meetingName, panelOpen]);
+
+  // The panel only makes sense while recording.
+  useEffect(() => {
+    if (state === "transcribing" || state === "processing") closePanel();
+  }, [state, closePanel]);
+
   const smoothedLevelsRef = useRef<number[]>(Array(16).fill(0));
   // When capture started, so the timer survives the overlay being minimized.
   const captureStartRef = useRef(Date.now());
@@ -79,6 +155,7 @@ const RecordingOverlay: React.FC = () => {
         // recording-ready while the awaits below are in flight; resetting after
         // them would overwrite that event and leave the overlay stuck arming.
         if (overlayState === "recording" || overlayState === "streaming") {
+          closePanel();
           setCaptureReady(false);
           smoothedLevelsRef.current = Array(16).fill(0);
           setLevels(Array(WAVE_BARS).fill(0));
@@ -119,6 +196,7 @@ const RecordingOverlay: React.FC = () => {
       });
 
       const unlistenHide = await listen("hide-overlay", () => {
+        closePanel();
         setIsVisible(false);
       });
 
@@ -190,7 +268,7 @@ const RecordingOverlay: React.FC = () => {
     };
 
     setupEventListeners();
-  }, []);
+  }, [closePanel]);
 
   // Elapsed capture timer starts only once microphone samples are flowing.
   useEffect(() => {
@@ -353,9 +431,20 @@ const RecordingOverlay: React.FC = () => {
       aria-label={t("meetingMark.tooltip")}
       title={t("meetingMark.tooltip")}
       aria-pressed={meetingOn}
-      onClick={() =>
-        usePendingMeetingStore.getState().set(!meetingOn, meetingName)
-      }
+      aria-expanded={panelOpen}
+      onClick={() => {
+        if (panelOpen) {
+          closePanel();
+          return;
+        }
+        // Flag it (keeping any title already set) and open the title panel.
+        if (!meetingOn) {
+          void usePendingMeetingStore.getState().set(true, meetingName);
+        }
+        setDraft(meetingName);
+        draftRef.current = meetingName;
+        openPanel();
+      }}
     >
       <svg viewBox="0 0 16 16" aria-hidden="true">
         <circle
@@ -378,19 +467,91 @@ const RecordingOverlay: React.FC = () => {
   );
 
   const controls = (live: boolean, withMic = false) => (
-    <>
+    <div className="sctl">
       {withMic && meetingBtn}
       {withMic && micAvailable && micBtn}
       {live && toggleBtn}
       {minimizeBtn}
       {cancelBtn}
-    </>
+    </div>
+  );
+
+  // Title panel for the meeting flag, stacked next to the pill.
+  const meetingPanel = panelOpen && (
+    <div className="smeet" dir={direction}>
+      <div className="smeet-head">
+        <span>
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <circle
+              cx="6"
+              cy="5.5"
+              r="2.4"
+              stroke="currentColor"
+              strokeWidth="1.4"
+              fill="none"
+            />
+            <path
+              d="M1.8 13 C1.8 10.6 3.6 9.4 6 9.4 C8.4 9.4 10.2 10.6 10.2 13 M10.6 3.4 C12 3.6 12.8 4.6 12.8 5.8 C12.8 7 12 8 10.8 8.2 M12 9.6 C13.6 10 14.4 11.2 14.4 13"
+              stroke="currentColor"
+              strokeWidth="1.4"
+              strokeLinecap="round"
+              fill="none"
+            />
+          </svg>
+          {t("meetingMark.label")}
+        </span>
+        <button
+          type="button"
+          className="smeet-link"
+          onClick={() => {
+            void usePendingMeetingStore.getState().set(false, "");
+            setDraft("");
+            draftRef.current = "";
+            closePanel();
+          }}
+        >
+          {t("meetingMark.remove")}
+        </button>
+      </div>
+      <div className="smeet-row">
+        <input
+          ref={inputRef}
+          className="smeet-input"
+          type="text"
+          value={draft}
+          maxLength={120}
+          placeholder={t("meetingMark.placeholder")}
+          onFocus={() => {
+            panelArmedRef.current = true;
+          }}
+          onChange={(e) => updateDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === "Escape") {
+              e.preventDefault();
+              closePanel();
+            }
+          }}
+        />
+        <button type="button" className="smeet-done" onClick={closePanel}>
+          {t("meetingMark.done")}
+        </button>
+      </div>
+      <p className="smeet-hint">{t("meetingMark.hint")}</p>
+    </div>
+  );
+
+  // Pill on one side, meeting panel (when open) growing away from the screen edge.
+  const withPanel = (card: React.ReactNode) => (
+    <div className="ov-stack">
+      {card}
+      {meetingPanel}
+    </div>
   );
 
   // Press anywhere on the card except a button to drag the overlay around.
   const handleCardMouseDown = (event: React.MouseEvent) => {
     if (event.button !== 0) return;
-    if ((event.target as HTMLElement).closest("button")) return;
+    if ((event.target as HTMLElement).closest("button, input")) return;
     event.preventDefault();
     commands.beginOverlayDrag();
   };
@@ -407,7 +568,12 @@ const RecordingOverlay: React.FC = () => {
       </div>
       {waveform}
       <div className="sbase-r">
-        {showTimer && <span className="stimer">{fmtTime(elapsed)}</span>}
+        {showTimer && (
+          <>
+            <span className="stimer">{fmtTime(elapsed)}</span>
+            <span className="ssep" aria-hidden="true" />
+          </>
+        )}
         {controls(live, true)}
       </div>
     </div>
@@ -441,13 +607,15 @@ const RecordingOverlay: React.FC = () => {
     if (compact) {
       return (
         <div dir={direction} className={`ov-stage ${position}`}>
-          <div
-            key={session}
-            className="scard live-mini"
-            onMouseDown={handleCardMouseDown}
-          >
-            {working ? workingRow(workLabel, true) : listeningRow(true, true)}
-          </div>
+          {withPanel(
+            <div
+              key={session}
+              className="scard live-mini"
+              onMouseDown={handleCardMouseDown}
+            >
+              {working ? workingRow(workLabel, true) : listeningRow(true, true)}
+            </div>,
+          )}
         </div>
       );
     }
@@ -461,34 +629,36 @@ const RecordingOverlay: React.FC = () => {
 
     return (
       <div dir={direction} className={`ov-stage ${position}`}>
-        <div
-          key={session}
-          className={`scard ${open ? "open" : ""} ${collapsed ? "working" : ""} ${
-            isVisible ? "" : "leaving"
-          }`}
-          onMouseDown={handleCardMouseDown}
-        >
-          <div className="stext">
-            <div className="stext-clip">
-              <div
-                className={`stext-cap ${overflowing ? "overflowing" : ""}`}
-                ref={capRef}
-                onScroll={handleStreamScroll}
-              >
-                <p>
-                  <span className="committed">
-                    {streamText.committed ? streamText.committed + " " : ""}
-                  </span>
-                  <span className="tentative">{streamText.tentative}</span>
-                  {/* Drop the blinking caret once finalizing — it's no longer
+        {withPanel(
+          <div
+            key={session}
+            className={`scard ${open ? "open" : ""} ${collapsed ? "working" : ""} ${
+              isVisible ? "" : "leaving"
+            }`}
+            onMouseDown={handleCardMouseDown}
+          >
+            <div className="stext">
+              <div className="stext-clip">
+                <div
+                  className={`stext-cap ${overflowing ? "overflowing" : ""}`}
+                  ref={capRef}
+                  onScroll={handleStreamScroll}
+                >
+                  <p>
+                    <span className="committed">
+                      {streamText.committed ? streamText.committed + " " : ""}
+                    </span>
+                    <span className="tentative">{streamText.tentative}</span>
+                    {/* Drop the blinking caret once finalizing — it's no longer
                       capturing, and a static spinner conveys the work. */}
-                  {!working && <span className="scaret" />}
-                </p>
+                    {!working && <span className="scaret" />}
+                  </p>
+                </div>
               </div>
             </div>
-          </div>
-          {working ? workingRow(workLabel, true) : listeningRow(open, true)}
-        </div>
+            {working ? workingRow(workLabel, true) : listeningRow(open, true)}
+          </div>,
+        )}
       </div>
     );
   }
@@ -507,12 +677,14 @@ const RecordingOverlay: React.FC = () => {
       dir={direction}
       className={`ov-stage ${position} ov-fade ${isVisible ? "show" : ""}`}
     >
-      <div
-        className={`scard compact ${working && isVisible ? "cworking" : ""}`}
-        onMouseDown={handleCardMouseDown}
-      >
-        {working ? workingRow(workLabel, false) : listeningRow(false, false)}
-      </div>
+      {withPanel(
+        <div
+          className={`scard compact ${working && isVisible ? "cworking" : ""}`}
+          onMouseDown={handleCardMouseDown}
+        >
+          {working ? workingRow(workLabel, false) : listeningRow(false, false)}
+        </div>,
+      )}
     </div>
   );
 };

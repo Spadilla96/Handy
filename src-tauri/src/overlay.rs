@@ -47,24 +47,45 @@ tauri_panel! {
 // Compact overlay (Minimal / transcribing / processing): the 40h pill animates
 // width from 200 (--ov-rest-w) to 236 (--ov-work-w) and expands from center, so
 // the window must fit the widest state plus a little slack.
-const OVERLAY_WIDTH: f64 = 256.0;
+const OVERLAY_WIDTH: f64 = 284.0;
 const OVERLAY_HEIGHT: f64 = 50.0;
+
+// Extra window height while the meeting-title panel is open (panel ~110px plus
+// the 6px gap to the pill, with slack). The card stays flush to the screen edge;
+// the panel grows away from it.
+const OVERLAY_MEETING_PANEL_EXTRA_HEIGHT: f64 = 124.0;
 
 // Actual is 394x118, just a little extra
 const OVERLAY_STREAM_WIDTH: f64 = 400.0;
 const OVERLAY_STREAM_HEIGHT: f64 = 120.0;
 
-// Live overlay collapsed to its pill (--ov-mini-w, 300): the timer plus the
-// expand / minimize / cancel buttons make it wider than the Minimal pill.
-const OVERLAY_STREAM_COMPACT_WIDTH: f64 = 366.0;
+// Live overlay collapsed to its pill (--ov-mini-w, 384): the timer plus the
+// meeting / mic / expand / minimize / cancel buttons make it wider than the
+// Minimal pill.
+const OVERLAY_STREAM_COMPACT_WIDTH: f64 = 404.0;
+
+/// The meeting-title panel is open (recording only); the window is taller and
+/// focusable while set.
+static OVERLAY_MEETING_PANEL: AtomicBool = AtomicBool::new(false);
+
+/// Window that had the foreground before the panel took focus (Windows), so
+/// focus can be handed back and the final paste doesn't land in the overlay.
+#[cfg(target_os = "windows")]
+static PREVIOUS_FOREGROUND: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 /// Overlay window size (logical) for a given UI state. `live_compact` is the
 /// user's choice to show the Live overlay as a pill without the text panel.
 fn overlay_dimensions(state: &str, live_compact: bool) -> (f64, f64) {
-    match state {
+    let (width, height) = match state {
         "streaming" if live_compact => (OVERLAY_STREAM_COMPACT_WIDTH, OVERLAY_HEIGHT),
         "streaming" => (OVERLAY_STREAM_WIDTH, OVERLAY_STREAM_HEIGHT),
         _ => (OVERLAY_WIDTH, OVERLAY_HEIGHT),
+    };
+    if OVERLAY_MEETING_PANEL.load(Ordering::SeqCst) {
+        (width, height + OVERLAY_MEETING_PANEL_EXTRA_HEIGHT)
+    } else {
+        (width, height)
     }
 }
 
@@ -871,6 +892,8 @@ static OVERLAY_SHOW_GENERATION: AtomicU64 = AtomicU64::new(0);
 /// Hides the recording overlay window with fade-out animation. Ends the
 /// session's overlay: a minimized overlay is shown again next time.
 pub fn hide_recording_overlay(app_handle: &AppHandle) {
+    // Never leave the overlay focusable / enlarged once the session is over.
+    set_meeting_panel(app_handle, false);
     if let Ok(mut current) = OVERLAY_STATE.lock() {
         current.clear();
     }
@@ -918,6 +941,55 @@ pub fn set_live_compact(app_handle: &AppHandle, compact: bool) {
     if !is_overlay_minimized() && current_state() == "streaming" {
         update_overlay_position(app_handle);
     }
+}
+
+/// Open or close the meeting-title panel. While open the window is taller and
+/// focusable (so the title can be typed); closing restores the non-focusable
+/// overlay and, on Windows, returns focus to the app that had it.
+pub fn set_meeting_panel(app_handle: &AppHandle, open: bool) {
+    if open == OVERLAY_MEETING_PANEL.load(Ordering::SeqCst) {
+        return;
+    }
+    // Only meaningful while a session is on screen.
+    if open && (current_state().is_empty() || is_overlay_minimized()) {
+        return;
+    }
+    let handle = app_handle.clone();
+    let _ = app_handle.run_on_main_thread(move || {
+        let Some(window) = handle.get_webview_window("recording_overlay") else {
+            OVERLAY_MEETING_PANEL.store(false, Ordering::SeqCst);
+            return;
+        };
+        if open {
+            #[cfg(target_os = "windows")]
+            {
+                use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+                let previous = unsafe { GetForegroundWindow() };
+                PREVIOUS_FOREGROUND.store(previous.0 as usize, Ordering::SeqCst);
+            }
+            OVERLAY_MEETING_PANEL.store(true, Ordering::SeqCst);
+            update_overlay_position_on_main(&handle);
+            let _ = window.set_focusable(true);
+            let _ = window.set_focus();
+        } else {
+            OVERLAY_MEETING_PANEL.store(false, Ordering::SeqCst);
+            let _ = window.set_focusable(false);
+            #[cfg(target_os = "windows")]
+            {
+                use windows::Win32::Foundation::HWND;
+                use windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
+                let previous = PREVIOUS_FOREGROUND.swap(0, Ordering::SeqCst);
+                if previous != 0 {
+                    unsafe {
+                        let _ = SetForegroundWindow(HWND(previous as _));
+                    }
+                }
+            }
+            if !current_state().is_empty() {
+                update_overlay_position_on_main(&handle);
+            }
+        }
+    });
 }
 
 /// Start a native window drag from the overlay (called on mouse-down). The

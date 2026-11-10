@@ -23,6 +23,14 @@ pub fn set_overlay_live_compact(app: AppHandle, compact: bool) {
     overlay::set_live_compact(&app, compact);
 }
 
+/// Open or close the meeting-title panel: grows the overlay window and lets it
+/// take keyboard focus only while the panel is open.
+#[tauri::command]
+#[specta::specta]
+pub fn set_overlay_meeting_panel(app: AppHandle, open: bool) {
+    overlay::set_meeting_panel(&app, open);
+}
+
 /// Return a dragged overlay to the configured top/bottom placement.
 #[tauri::command]
 #[specta::specta]

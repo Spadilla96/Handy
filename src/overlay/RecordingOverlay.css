@@ -50,14 +50,14 @@
      the card's max footprint (--ov-work-w for compact, --ov-open-w for Live),
      since the card is anchored flush to the screen edge in CSS. Keep overlay.rs
      in sync when these change. */
-  --ov-rest-w: 246px; /* resting compact pill (minimal, recording): grip, dot,
-                         waveform, mic + minimize + cancel */
-  --ov-pill-w: 282px; /* base width / Live pill before it opens or collapses
+  --ov-rest-w: 264px; /* resting compact pill (minimal, recording): grip, dot,
+                         waveform, meeting + mic + minimize + cancel */
+  --ov-pill-w: 304px; /* base width / Live pill before it opens or collapses
                          (adds the panel/pill toggle) */
   --ov-work-w: 236px; /* minimal working pill (transcribing / polishing) -- wide
                          enough to center longer labels */
   --ov-live-work-w: 272px; /* Live working pill (collapsed): label + 3 controls */
-  --ov-mini-w: 346px; /* Live collapsed to a pill by the user: timer + 4 controls */
+  --ov-mini-w: 384px; /* Live collapsed to a pill by the user: timer + 5 controls */
   --ov-open-w: 392px; /* Live panel, expanded */
   --ov-base-h: 40px; /* control-row height (.sbase) */
   --ov-cap-max-h: 64px; /* max height of the scrolling live-text region */
@@ -318,10 +318,11 @@
   flex: none; /* the control row never squashes; only the text region gives */
   padding: 0 10px;
   display: grid;
-  /* Equal side columns (min 22px to hold the cancel button) keep the center item
-     — waveform or label — centered whether the pill is at min width or content-
-     sized. */
-  grid-template-columns: minmax(22px, 1fr) auto minmax(22px, 1fr);
+  /* Equal side columns keep the center item — waveform or label — centered, but
+     each side is never narrower than its own content (max-content). Without that
+     floor the right group (timer + controls) overflowed its 1fr share and slid
+     under the waveform. */
+  grid-template-columns: minmax(max-content, 1fr) auto minmax(max-content, 1fr);
   align-items: center;
 }
 .sbase-l {
@@ -333,8 +334,20 @@
 .sbase-r {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   justify-self: end;
+}
+/* Control buttons grouped tight, set apart from the timer by a hairline. */
+.sctl {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.ssep {
+  width: 1px;
+  height: 14px;
+  flex: none;
+  background: var(--s-border);
 }
 .sdot {
   width: 7px;
@@ -370,6 +383,9 @@
   color: var(--s-faint);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  /* Fixed width so the controls don't shift when 9:59 becomes 10:00. */
+  min-width: 34px;
+  text-align: right;
   opacity: 0;
   transition: opacity 240ms ease 80ms;
 }
@@ -484,6 +500,126 @@
 .sx.sx-meeting.on {
   color: var(--s-accent);
   background: var(--s-accent-soft);
+}
+
+/* Pill + meeting panel stacked (DOM order: pill, panel): the panel opens above a
+   bottom pill and below a top pill, always growing away from the screen edge. */
+.ov-stack {
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: center;
+  gap: 6px;
+}
+.ov-stage.top .ov-stack {
+  flex-direction: column;
+}
+
+/* Meeting title panel: opens from the pill when the recording is flagged. */
+.smeet {
+  width: min(272px, calc(100vw - 2px));
+  box-sizing: border-box;
+  padding: 10px 12px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  border-radius: 16px;
+  background: var(--s-surface);
+  border: 1px solid var(--s-border);
+  color: var(--color-text);
+  transform-origin: bottom center;
+  animation: smeet-pop 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.ov-stage.top .smeet {
+  transform-origin: top center;
+}
+@keyframes smeet-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.smeet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--s-accent);
+}
+.smeet-head span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.smeet-head svg {
+  width: 12px;
+  height: 12px;
+}
+.smeet-link {
+  border: 0;
+  padding: 0;
+  background: none;
+  font: inherit;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--s-muted);
+  cursor: pointer;
+}
+.smeet-link:hover {
+  color: var(--color-text);
+  text-decoration: underline;
+}
+.smeet-row {
+  display: flex;
+  gap: 6px;
+}
+.smeet-input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  box-sizing: border-box;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--s-border);
+  background: var(--s-hair);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+.smeet-input::placeholder {
+  color: var(--s-faint);
+}
+.smeet-input:focus {
+  border-color: var(--s-accent);
+}
+.smeet-done {
+  flex: none;
+  height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--s-accent);
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.smeet-done:hover {
+  filter: brightness(1.08);
+}
+.smeet-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--s-faint);
 }
 
 /* working state (transcribing / polishing) — spinner + label */

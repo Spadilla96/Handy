@@ -920,6 +920,9 @@ async minimizeOverlay() : Promise<void> {
 async setOverlayLiveCompact(compact: boolean) : Promise<void> {
     await TAURI_INVOKE("set_overlay_live_compact", { compact });
 },
+async setOverlayMeetingPanel(open: boolean) : Promise<void> {
+    await TAURI_INVOKE("set_overlay_meeting_panel", { open });
+},
 async resetOverlayPosition() : Promise<void> {
     await TAURI_INVOKE("reset_overlay_position");
 },
