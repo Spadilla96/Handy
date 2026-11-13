@@ -253,12 +253,27 @@ const SpeakerStrip: React.FC<SpeakerStripProps> = ({
   onRename,
 }) => {
   const { t } = useTranslation();
-  const speakers = new Map<number, { index: number; turns: number }>();
+  // Every utterance index per speaker, so repeated clicks can walk through
+  // them (the first one is often a short or noisy intervention).
+  const speakers = new Map<number, number[]>();
   utterances.forEach((u, index) => {
     const seen = speakers.get(u.speaker);
-    if (seen) seen.turns += 1;
-    else speakers.set(u.speaker, { index, turns: 1 });
+    if (seen) seen.push(index);
+    else speakers.set(u.speaker, [index]);
   });
+  // Last speaker clicked and which of their utterances we jumped to. Clicking
+  // another speaker resets it for everyone.
+  const lastJump = useRef<{ speaker: number; n: number } | null>(null);
+  useEffect(() => {
+    lastJump.current = null;
+  }, [utterances]);
+
+  const jumpToNext = (speaker: number, indices: number[]) => {
+    const last = lastJump.current;
+    const n = last?.speaker === speaker ? (last.n + 1) % indices.length : 0;
+    lastJump.current = { speaker, n };
+    onJump(indices[n], utterances[indices[n]].start);
+  };
   // Known speakers by id; the unknown speaker (0) last.
   const sorted = [...speakers.entries()].sort(([a], [b]) =>
     a === 0 ? 1 : b === 0 ? -1 : a - b,
@@ -275,7 +290,7 @@ const SpeakerStrip: React.FC<SpeakerStripProps> = ({
         <Info size={12} />
       </span>
       <div className="flex-1 min-w-0 flex gap-1.5 overflow-x-auto pb-1">
-        {sorted.map(([speaker, { index, turns }]) => (
+        {sorted.map(([speaker, indices]) => (
           <div
             key={speaker}
             className="group shrink-0 inline-flex items-center rounded-full border border-mid-gray/25 bg-mid-gray/5 hover:bg-mid-gray/15 transition-colors"
@@ -284,7 +299,7 @@ const SpeakerStrip: React.FC<SpeakerStripProps> = ({
               type="button"
               className="inline-flex items-center gap-1.5 ps-2.5 pe-1.5 py-1 text-xs cursor-pointer"
               title={t("meetings.detail.jumpToSpeaker")}
-              onClick={() => onJump(index, utterances[index].start)}
+              onClick={() => jumpToNext(speaker, indices)}
             >
               <span
                 className={`size-2 rounded-full bg-current ${speakerColor(speaker)}`}
@@ -292,7 +307,9 @@ const SpeakerStrip: React.FC<SpeakerStripProps> = ({
               <span className="font-medium max-w-[9rem] truncate">
                 {nameFor(speaker)}
               </span>
-              <span className="text-mid-gray tabular-nums">{turns}</span>
+              <span className="text-mid-gray tabular-nums">
+                {indices.length}
+              </span>
             </button>
             <button
               type="button"

@@ -13,7 +13,7 @@ import { useOsType } from "@/hooks/useOsType";
 import { formatDate } from "@/utils/dateFormat";
 import { AudioPlayerGroup } from "../../ui/AudioPlayer";
 import { copyToClipboard } from "./clipboard";
-import { HistoryDetail } from "./HistoryDetail";
+import { HistoryDetail, type RetranscribeOptions } from "./HistoryDetail";
 import { useMeetingStore } from "../../../stores/meetingStore";
 
 const PAGE_SIZE = 30;
@@ -256,8 +256,15 @@ export const HistorySettings: React.FC = () => {
     [osType],
   );
 
-  const retryHistoryEntry = async (id: number) => {
-    const result = await commands.retryHistoryEntryTranscription(id);
+  const retryHistoryEntry = async (
+    id: number,
+    options?: RetranscribeOptions,
+  ) => {
+    const result = await commands.retryHistoryEntryTranscription(
+      id,
+      options?.model ?? null,
+      options?.enhance ?? null,
+    );
     if (result.status !== "ok") {
       throw new Error(String(result.error));
     }

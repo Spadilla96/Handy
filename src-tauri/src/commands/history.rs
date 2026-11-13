@@ -66,6 +66,8 @@ pub async fn retry_history_entry_transcription(
     history_manager: State<'_, Arc<HistoryManager>>,
     transcription_manager: State<'_, Arc<TranscriptionManager>>,
     id: i64,
+    model: Option<String>,
+    enhance: Option<bool>,
 ) -> Result<(), String> {
     let entry = history_manager
         .get_entry_by_id(id)
@@ -74,20 +76,59 @@ pub async fn retry_history_entry_transcription(
         .ok_or_else(|| format!("History entry {} not found", id))?;
 
     let audio_path = history_manager.get_audio_file_path(&entry.file_name);
-    let samples = crate::audio_toolkit::read_wav_samples(&audio_path)
+    let mut samples = crate::audio_toolkit::read_wav_samples(&audio_path)
         .map_err(|e| format!("Failed to load audio: {}", e))?;
 
     if samples.is_empty() {
         return Err("Recording has no audio samples".to_string());
     }
 
-    transcription_manager.initiate_model_load();
+    // Optional: high-pass + volume normalization for distant voices. Only the
+    // copy fed to the model is changed; the recording on disk is untouched.
+    if enhance.unwrap_or(false) {
+        samples = crate::audio_toolkit::enhance::enhance_speech(&samples);
+    }
 
+    // `model` overrides the selected model for this re-transcription only.
+    let model = model.filter(|m| !m.is_empty());
+    if model.is_none() {
+        transcription_manager.initiate_model_load();
+    }
+
+    // Long recordings (meetings) must not be fed to the model in one go: its
+    // compute graph grows with the audio length (a 47 min meeting asked for a
+    // 127 GB buffer and failed). Transcribe in short windows and join them.
     let tm = Arc::clone(&transcription_manager);
-    let transcription = tauri::async_runtime::spawn_blocking(move || tm.transcribe(samples))
-        .await
-        .map_err(|e| format!("Transcription task panicked: {}", e))?
-        .map_err(|e| e.to_string())?;
+    let transcription = tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<String> {
+        let override_model = match &model {
+            Some(m) if tm.get_current_model().as_deref() != Some(m.as_str()) => {
+                tm.load_model(m)?;
+                true
+            }
+            _ => false,
+        };
+
+        let result = (|| -> anyhow::Result<String> {
+            let mut parts: Vec<String> = Vec::new();
+            for chunk in split_at_quiet_points(&samples) {
+                let text = tm.transcribe(chunk.to_vec())?;
+                let text = text.trim();
+                if !text.is_empty() {
+                    parts.push(text.to_string());
+                }
+            }
+            Ok(parts.join(" "))
+        })();
+
+        // Go back to the selected model the next time one is needed.
+        if override_model {
+            tm.reload_model_on_next_use();
+        }
+        result
+    })
+    .await
+    .map_err(|e| format!("Transcription task panicked: {}", e))?
+    .map_err(|e| e.to_string())?;
 
     if transcription.is_empty() {
         return Err("Recording contains no speech".to_string());
@@ -104,6 +145,45 @@ pub async fn retry_history_entry_transcription(
         )
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+/// Sample rate of the audio returned by `read_wav_samples`.
+const SAMPLE_RATE: usize = 16_000;
+/// Target window length fed to the model per call.
+const CHUNK_SECS: usize = 60;
+/// How far before the target boundary we look for a quiet spot to cut at.
+const SEARCH_SECS: usize = 5;
+
+/// Split `samples` into windows of about `CHUNK_SECS`, cutting each one at the
+/// quietest 50 ms frame in the last `SEARCH_SECS` so words aren't split.
+fn split_at_quiet_points(samples: &[f32]) -> Vec<&[f32]> {
+    let chunk = CHUNK_SECS * SAMPLE_RATE;
+    let search = SEARCH_SECS * SAMPLE_RATE;
+    let frame = SAMPLE_RATE / 20;
+    let mut out = Vec::new();
+    let mut start = 0;
+    while start < samples.len() {
+        let target = start + chunk;
+        if target >= samples.len() {
+            out.push(&samples[start..]);
+            break;
+        }
+        let from = target - search;
+        let mut best = target;
+        let mut best_energy = f32::MAX;
+        let mut pos = from;
+        while pos + frame <= target {
+            let energy: f32 = samples[pos..pos + frame].iter().map(|s| s * s).sum();
+            if energy < best_energy {
+                best_energy = energy;
+                best = pos + frame / 2;
+            }
+            pos += frame;
+        }
+        out.push(&samples[start..best]);
+        start = best;
+    }
+    out
 }
 
 #[tauri::command]
@@ -151,4 +231,38 @@ pub async fn update_recording_retention_period(
         .map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_audio_is_one_chunk() {
+        let samples = vec![0.1f32; 10 * SAMPLE_RATE];
+        let chunks = split_at_quiet_points(&samples);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].len(), samples.len());
+    }
+
+    #[test]
+    fn long_audio_is_split_without_losing_samples() {
+        let samples = vec![0.1f32; 47 * 60 * SAMPLE_RATE];
+        let chunks = split_at_quiet_points(&samples);
+        assert!(chunks.len() > 40);
+        assert_eq!(chunks.iter().map(|c| c.len()).sum::<usize>(), samples.len());
+        let max = (CHUNK_SECS + 1) * SAMPLE_RATE;
+        assert!(chunks.iter().all(|c| !c.is_empty() && c.len() <= max));
+    }
+
+    #[test]
+    fn cuts_at_the_quiet_spot() {
+        // Loud everywhere except a silent 50 ms frame ~2 s before the target.
+        let mut samples = vec![0.5f32; 130 * SAMPLE_RATE];
+        let quiet = CHUNK_SECS * SAMPLE_RATE - 2 * SAMPLE_RATE;
+        samples[quiet..quiet + SAMPLE_RATE / 20].fill(0.0);
+        let chunks = split_at_quiet_points(&samples);
+        let first = chunks[0].len();
+        assert!(first >= quiet && first <= quiet + SAMPLE_RATE / 20);
+    }
 }

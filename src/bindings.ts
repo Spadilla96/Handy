@@ -1058,9 +1058,9 @@ async deleteHistoryEntry(id: number) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async retryHistoryEntryTranscription(id: number) : Promise<Result<null, string>> {
+async retryHistoryEntryTranscription(id: number, model: string | null, enhance: boolean | null) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("retry_history_entry_transcription", { id }) };
+    return { status: "ok", data: await TAURI_INVOKE("retry_history_entry_transcription", { id, model, enhance }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

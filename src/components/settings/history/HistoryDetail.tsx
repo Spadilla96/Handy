@@ -5,15 +5,24 @@ import {
   FolderOpen,
   MoreHorizontal,
   RotateCcw,
+  SlidersHorizontal,
   Star,
   Trash2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import type { HistoryEntry } from "@/bindings";
+import { commands, type HistoryEntry, type ModelInfo } from "@/bindings";
 import { formatDateTime } from "@/utils/dateFormat";
 import { AudioPlayer } from "../../ui/AudioPlayer";
 import { IconButton, MeetingButton } from "./HistoryActions";
+
+/** Per-run choices for a re-transcription; empty = the app's defaults. */
+export interface RetranscribeOptions {
+  /** Model id to use for this run only (default: the selected model). */
+  model?: string;
+  /** Apply high-pass + volume normalization before transcribing. */
+  enhance?: boolean;
+}
 
 interface HistoryDetailProps {
   entry: HistoryEntry;
@@ -21,7 +30,7 @@ interface HistoryDetailProps {
   onCopyText: () => Promise<boolean>;
   getAudioUrl: (fileName: string) => Promise<string | null>;
   onDelete: (id: number) => Promise<void>;
-  onRetranscribe: (id: number) => Promise<void>;
+  onRetranscribe: (id: number, options?: RetranscribeOptions) => Promise<void>;
   onOpenFolder: () => void;
 }
 
@@ -44,13 +53,28 @@ export const HistoryDetail: React.FC<HistoryDetailProps> = ({
   const [retrying, setRetrying] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [showOptions, setShowOptions] = useState(false);
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [optModel, setOptModel] = useState("");
+  const [optEnhance, setOptEnhance] = useState(false);
 
   // A different entry starts with a clean slate.
   useEffect(() => {
     setMenuOpen(false);
     setConfirmDelete(false);
+    setShowOptions(false);
     setShowCopied(false);
   }, [entry.id]);
+
+  // Installed models, to pick one for a single re-transcription.
+  useEffect(() => {
+    if (!showOptions) return;
+    void commands.getAvailableModels().then((res) => {
+      if (res.status === "ok") {
+        setModels(res.data.filter((m) => m.is_downloaded));
+      }
+    });
+  }, [showOptions]);
 
   const text = entry.transcription_text;
   const hasTranscription = text.trim().length > 0;
@@ -72,10 +96,10 @@ export const HistoryDetail: React.FC<HistoryDetailProps> = ({
     setTimeout(() => setShowCopied(false), 2000);
   };
 
-  const handleRetranscribe = async () => {
+  const handleRetranscribe = async (options?: RetranscribeOptions) => {
     try {
       setRetrying(true);
-      await onRetranscribe(entry.id);
+      await onRetranscribe(entry.id, options);
     } catch (error) {
       console.error("Failed to re-transcribe:", error);
       toast.error(t("settings.history.retranscribeError"));
@@ -96,6 +120,7 @@ export const HistoryDetail: React.FC<HistoryDetailProps> = ({
   const closeMenu = () => {
     setMenuOpen(false);
     setConfirmDelete(false);
+    setShowOptions(false);
   };
 
   const date = new Date(Number(entry.timestamp) * 1000);
@@ -181,7 +206,11 @@ export const HistoryDetail: React.FC<HistoryDetailProps> = ({
                   onClick={closeMenu}
                   aria-hidden="true"
                 />
-                <div className="absolute right-0 top-full mt-1 z-20 min-w-52 rounded-lg border border-mid-gray/25 bg-background shadow-lg py-1">
+                <div
+                  className={`absolute right-0 top-full mt-1 z-20 rounded-lg border border-mid-gray/25 bg-background shadow-lg py-1 ${
+                    showOptions ? "w-72" : "min-w-52"
+                  }`}
+                >
                   <button
                     type="button"
                     onClick={() => {
@@ -194,6 +223,64 @@ export const HistoryDetail: React.FC<HistoryDetailProps> = ({
                     <RotateCcw size={14} />
                     {t("settings.history.retranscribe")}
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowOptions((v) => !v)}
+                    disabled={retrying}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-start hover:bg-mid-gray/15 cursor-pointer disabled:opacity-40"
+                  >
+                    <SlidersHorizontal size={14} />
+                    {t("settings.history.retranscribeWithOptions")}
+                  </button>
+                  {showOptions && (
+                    <div className="mx-2 my-1 space-y-2 rounded-md border border-mid-gray/20 bg-mid-gray/5 p-2.5">
+                      <label className="block space-y-1">
+                        <span className="text-xs text-mid-gray">
+                          {t("settings.history.retranscribeModel")}
+                        </span>
+                        <select
+                          value={optModel}
+                          onChange={(e) => setOptModel(e.target.value)}
+                          className="w-full rounded-md border border-mid-gray/25 bg-background px-2 py-1 text-sm"
+                        >
+                          <option value="">
+                            {t("settings.history.retranscribeModelCurrent")}
+                          </option>
+                          {models.map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label
+                        className="flex items-start gap-2 text-sm cursor-pointer"
+                        title={t("settings.history.retranscribeEnhanceHint")}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={optEnhance}
+                          onChange={(e) => setOptEnhance(e.target.checked)}
+                          className="mt-0.5"
+                        />
+                        <span>{t("settings.history.retranscribeEnhance")}</span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          closeMenu();
+                          void handleRetranscribe({
+                            model: optModel || undefined,
+                            enhance: optEnhance,
+                          });
+                        }}
+                        disabled={retrying}
+                        className="w-full rounded-md bg-logo-primary px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 cursor-pointer disabled:opacity-40"
+                      >
+                        {t("settings.history.retranscribeRun")}
+                      </button>
+                    </div>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
