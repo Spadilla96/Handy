@@ -9,7 +9,7 @@ import {
   Cpu,
   Users,
 } from "lucide-react";
-import HandyHand from "./icons/HandyHand";
+import DenDenMushi from "./icons/DenDenMushi";
 import { useSettings } from "../hooks/useSettings";
 import {
   GeneralSettings,
@@ -42,7 +42,7 @@ interface SectionConfig {
 export const SECTIONS_CONFIG = {
   general: {
     labelKey: "sidebar.general",
-    icon: HandyHand,
+    icon: DenDenMushi,
     component: GeneralSettings,
     enabled: () => true,
   },
@@ -147,7 +147,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       className="flex flex-col w-[84px] shrink-0 h-full border-e border-mid-gray/20 items-center px-2 py-3 gap-1"
     >
       <div className="mb-3 mt-1">
-        <HandyHand width={36} height={36} />
+        <DenDenMushi variant="color" width={40} height={40} />
       </div>
       {mainSections.map(renderItem)}
       <div className="flex-1" />
