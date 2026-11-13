@@ -3,8 +3,49 @@ use crate::managers::{
     history::{HistoryManager, PaginatedHistory},
     transcription::TranscriptionManager,
 };
+use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
+
+/// Error returned when a re-transcription is requested while another runs.
+/// The frontend matches on this exact string.
+const RETRANSCRIBE_BUSY: &str = "retranscribe_busy";
+
+/// Only one re-transcription may run at a time: they share one engine, and a
+/// second run that loads a different model swaps it out from under the first
+/// (their windows then get mixed between two models).
+static RETRANSCRIBING: AtomicBool = AtomicBool::new(false);
+
+/// Clears [`RETRANSCRIBING`] when dropped, however the command ends.
+struct RetranscribeGuard;
+
+impl RetranscribeGuard {
+    fn acquire() -> Option<Self> {
+        RETRANSCRIBING
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for RetranscribeGuard {
+    fn drop(&mut self) {
+        RETRANSCRIBING.store(false, Ordering::Release);
+    }
+}
+
+/// Sent as `history-retranscribe-progress` after each window of a
+/// re-transcription is done (and once with `done: 0` when it starts).
+#[derive(Clone, Serialize)]
+struct RetranscribeProgress {
+    id: i64,
+    done: usize,
+    total: usize,
+    elapsed_ms: u64,
+    /// Everything transcribed so far, shown live while the rest runs.
+    text: String,
+}
 
 #[tauri::command]
 #[specta::specta]
@@ -69,6 +110,8 @@ pub async fn retry_history_entry_transcription(
     model: Option<String>,
     enhance: Option<bool>,
 ) -> Result<(), String> {
+    let _guard = RetranscribeGuard::acquire().ok_or_else(|| RETRANSCRIBE_BUSY.to_string())?;
+
     let entry = history_manager
         .get_entry_by_id(id)
         .await
@@ -99,6 +142,7 @@ pub async fn retry_history_entry_transcription(
     // compute graph grows with the audio length (a 47 min meeting asked for a
     // 127 GB buffer and failed). Transcribe in short windows and join them.
     let tm = Arc::clone(&transcription_manager);
+    let progress_app = app.clone();
     let transcription = tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<String> {
         let override_model = match &model {
             Some(m) if tm.get_current_model().as_deref() != Some(m.as_str()) => {
@@ -110,12 +154,29 @@ pub async fn retry_history_entry_transcription(
 
         let result = (|| -> anyhow::Result<String> {
             let mut parts: Vec<String> = Vec::new();
-            for chunk in split_at_quiet_points(&samples) {
+            let chunks = split_at_quiet_points(&samples);
+            let total = chunks.len();
+            let started = std::time::Instant::now();
+            let emit = |done: usize, parts: &[String]| {
+                let _ = progress_app.emit(
+                    "history-retranscribe-progress",
+                    RetranscribeProgress {
+                        id,
+                        done,
+                        total,
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                        text: parts.join(" "),
+                    },
+                );
+            };
+            emit(0, &parts);
+            for (i, chunk) in chunks.into_iter().enumerate() {
                 let text = tm.transcribe(chunk.to_vec())?;
                 let text = text.trim();
                 if !text.is_empty() {
                     parts.push(text.to_string());
                 }
+                emit(i + 1, &parts);
             }
             Ok(parts.join(" "))
         })();

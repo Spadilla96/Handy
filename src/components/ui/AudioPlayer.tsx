@@ -10,6 +10,23 @@ import React, {
   useState,
 } from "react";
 import { Play, Pause } from "lucide-react";
+import { useTranslation } from "react-i18next";
+
+const SPEEDS = [1, 1.25, 1.5, 2] as const;
+const SPEED_STORAGE_KEY = "audioPlayer.speed";
+
+/** Speed label: "1×", "1.25×", "1.5×", "2×". */
+const formatSpeed = (speed: number) => `${speed}×`;
+
+/** Last speed the user picked, shared by every player; storage may be blocked. */
+const readStoredSpeed = (): number => {
+  try {
+    const stored = Number(localStorage.getItem(SPEED_STORAGE_KEY));
+    return (SPEEDS as readonly number[]).includes(stored) ? stored : 1;
+  } catch {
+    return 1;
+  }
+};
 
 interface AudioPlayerProps {
   /** Audio source URL. If not provided, onLoadRequest must be provided. */
@@ -70,7 +87,9 @@ export const AudioPlayer = forwardRef<AudioPlayerHandle, AudioPlayerProps>(
     },
     ref,
   ) {
+    const { t } = useTranslation();
     const group = useContext(AudioPlayerGroupContext);
+    const [speed, setSpeed] = useState(readStoredSpeed);
     const [isPlaying, setIsPlaying] = useState(false);
     const [duration, setDuration] = useState(0);
     const [currentTime, setCurrentTime] = useState(0);
@@ -140,6 +159,25 @@ export const AudioPlayer = forwardRef<AudioPlayerHandle, AudioPlayerProps>(
         }
       };
     }, [isPlaying, isDragging, tick]);
+
+    // Apply the chosen speed (voice pitch preserved). The default rate is set
+    // too because loading a new source resets playbackRate to it.
+    useEffect(() => {
+      const audio = audioRef.current;
+      if (!audio) return;
+      audio.defaultPlaybackRate = speed;
+      audio.playbackRate = speed;
+      audio.preservesPitch = true;
+    }, [speed, src]);
+
+    const chooseSpeed = (next: number) => {
+      setSpeed(next);
+      try {
+        localStorage.setItem(SPEED_STORAGE_KEY, String(next));
+      } catch {
+        // Storage unavailable: the speed just won't be remembered.
+      }
+    };
 
     // Audio event handlers
     useEffect(() => {
@@ -368,6 +406,32 @@ export const AudioPlayer = forwardRef<AudioPlayerHandle, AudioPlayerProps>(
           <span className="text-xs text-text/60 min-w-[30px] tabular-nums">
             {formatTime(duration)}
           </span>
+        </div>
+
+        <div
+          role="group"
+          aria-label={t("common.playbackSpeed")}
+          className="shrink-0 inline-flex items-center rounded-full border border-mid-gray/25 bg-mid-gray/5 p-0.5"
+        >
+          {SPEEDS.map((option) => {
+            const active = option === speed;
+            return (
+              <button
+                key={option}
+                type="button"
+                onClick={() => chooseSpeed(option)}
+                aria-pressed={active}
+                title={`${t("common.playbackSpeed")}: ${formatSpeed(option)}`}
+                className={`min-w-9 rounded-full px-2 py-0.5 text-[11px] font-medium tabular-nums transition-colors cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-logo-primary ${
+                  active
+                    ? "bg-logo-primary text-white"
+                    : "text-text/60 hover:text-text hover:bg-mid-gray/15"
+                }`}
+              >
+                {formatSpeed(option)}
+              </button>
+            );
+          })}
         </div>
       </div>
     );

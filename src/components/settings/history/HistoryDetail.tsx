@@ -9,6 +9,7 @@ import {
   Star,
   Trash2,
 } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { commands, type HistoryEntry, type ModelInfo } from "@/bindings";
@@ -33,6 +34,25 @@ interface HistoryDetailProps {
   onRetranscribe: (id: number, options?: RetranscribeOptions) => Promise<void>;
   onOpenFolder: () => void;
 }
+
+/** Sent by the backend as `history-retranscribe-progress`. */
+interface RetranscribeProgress {
+  id: number;
+  done: number;
+  total: number;
+  elapsed_ms: number;
+  text: string;
+}
+
+const formatClock = (ms: number) => {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const mm = String(m).padStart(h > 0 ? 2 : 1, "0");
+  const ss = String(s).padStart(2, "0");
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+};
 
 const countWords = (text: string) => {
   const trimmed = text.trim();
@@ -65,6 +85,35 @@ export const HistoryDetail: React.FC<HistoryDetailProps> = ({
     setShowOptions(false);
     setShowCopied(false);
   }, [entry.id]);
+
+  // Live progress of a running re-transcription: windows done, partial text,
+  // and a ticking clock so elapsed/remaining time move between updates.
+  const [progress, setProgress] = useState<
+    (RetranscribeProgress & { receivedAt: number }) | null
+  >(null);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const unlisten = listen<RetranscribeProgress>(
+      "history-retranscribe-progress",
+      (event) => {
+        if (event.payload.id !== entry.id) return;
+        setProgress({ ...event.payload, receivedAt: Date.now() });
+      },
+    );
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, [entry.id]);
+
+  useEffect(() => {
+    if (!retrying) {
+      setProgress(null);
+      return;
+    }
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [retrying]);
 
   // Installed models, to pick one for a single re-transcription.
   useEffect(() => {
@@ -102,7 +151,11 @@ export const HistoryDetail: React.FC<HistoryDetailProps> = ({
       await onRetranscribe(entry.id, options);
     } catch (error) {
       console.error("Failed to re-transcribe:", error);
-      toast.error(t("settings.history.retranscribeError"));
+      toast.error(
+        error instanceof Error && error.message === "retranscribe_busy"
+          ? t("settings.history.retranscribeBusy")
+          : t("settings.history.retranscribeError"),
+      );
     } finally {
       setRetrying(false);
     }
@@ -331,22 +384,60 @@ export const HistoryDetail: React.FC<HistoryDetailProps> = ({
             }
           `}</style>
         )}
+        {retrying && progress && progress.total > 0 && (
+          <div className="mb-4 space-y-1.5">
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-mid-gray/20">
+              <div
+                className="h-full rounded-full bg-logo-primary transition-[width] duration-500"
+                style={{
+                  width: `${Math.round((progress.done / progress.total) * 100)}%`,
+                }}
+              />
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-x-4 text-xs text-mid-gray tabular-nums">
+              <span>
+                {Math.round((progress.done / progress.total) * 100)}% ·{" "}
+                {t("settings.history.progressParts", {
+                  done: progress.done,
+                  total: progress.total,
+                })}
+              </span>
+              <span>
+                {t("settings.history.progressElapsed", {
+                  time: formatClock(
+                    progress.elapsed_ms + (now - progress.receivedAt),
+                  ),
+                })}
+                {" · "}
+                {progress.done > 0
+                  ? t("settings.history.progressRemaining", {
+                      time: formatClock(
+                        (progress.elapsed_ms / progress.done) *
+                          (progress.total - progress.done) -
+                          (now - progress.receivedAt),
+                      ),
+                    })
+                  : t("settings.history.progressEstimating")}
+              </span>
+            </div>
+          </div>
+        )}
         <p
           className={`text-sm leading-relaxed ${
-            retrying
+            retrying && !progress?.text
               ? ""
-              : hasTranscription
+              : hasTranscription || progress?.text
                 ? "text-text/90 select-text cursor-text whitespace-pre-wrap break-words"
                 : "text-text/40"
           }`}
           style={
-            retrying
+            retrying && !progress?.text
               ? { animation: "transcribe-pulse 3s ease-in-out infinite" }
               : undefined
           }
         >
           {retrying
-            ? t("settings.history.transcribing")
+            ? progress?.text || t("settings.history.transcribing")
             : hasTranscription
               ? text
               : t("settings.history.transcriptionFailed")}
