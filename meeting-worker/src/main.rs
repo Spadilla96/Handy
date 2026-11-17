@@ -11,9 +11,13 @@
 //! Output (stdout): one JSON object per line:
 //!   {"type":"ready","backend":"vulkan"|"cpu"}
 //!   {"type":"update","committed":[Utterance],"tail":[Utterance],"audio_s":..,"asr_s":..,"diar_s":..}
-//!   {"type":"final","utterances":[Utterance],"audio_s":..}
+//!   {"type":"final","utterances":[Utterance],"segments":[{start,end,speaker}],"audio_s":..}
 //!   {"type":"error","message":".."}
 //! Committed utterances never change; the tail is replaced on every update.
+//!
+//! Without `--asr-model` only the diarizer runs (Handy transcribes the text
+//! itself): utterances stay empty and the final message carries the raw
+//! speaker segments.
 
 mod nemo_ffi;
 mod transcript;
@@ -40,7 +44,8 @@ const SEGMENT_REFRESH_SECS: f64 = 1.0;
 const AUDIO_QUEUE_BLOCKS: usize = 600;
 
 struct Args {
-    asr_model: PathBuf,
+    /// `None`: diarization only.
+    asr_model: Option<PathBuf>,
     diar_model: PathBuf,
     gpu: i32,
     asr_gpu: Option<i32>,
@@ -94,7 +99,7 @@ fn parse_args() -> Result<Args> {
         }
     }
     Ok(Args {
-        asr_model: asr_model.context("--asr-model is required")?,
+        asr_model,
         diar_model: diar_model.context("--diar-model is required")?,
         gpu,
         asr_gpu,
@@ -153,16 +158,21 @@ fn run() -> Result<()> {
     // ggml-vulkan device setup is not safe to run from two threads at once.
     let init_lock = Mutex::new(());
 
+    let asr_enabled = args.asr_model.is_some();
+    if !asr_enabled {
+        shared.lock().unwrap().asr_done = true;
+    }
+
     std::thread::scope(|s| -> Result<()> {
         // ASR thread: owns the recognizer and its stream.
-        {
+        if let Some(asr_model) = &args.asr_model {
             let (nemo, shared, ready_tx, args, init_lock) =
                 (&nemo, &shared, ready_tx.clone(), &args, &init_lock);
             s.spawn(move || {
                 let created = {
                     let _guard = init_lock.lock().unwrap();
                     create_with_fallback(args.asr_gpu.unwrap_or(args.gpu), |g| {
-                        Recognizer::new(nemo, &args.asr_model, g, args.endpoint_ms)
+                        Recognizer::new(nemo, asr_model, g, args.endpoint_ms)
                     })
                 };
                 let (mut rec, gpu) = match created {
@@ -179,6 +189,9 @@ fn run() -> Result<()> {
                     emit(json!({"type": "error", "message": format!("ASR: {e:#}")}));
                 }
             });
+        } else {
+            // No ASR thread: sends to its channel fail instantly and are ignored.
+            drop(asr_rx);
         }
         // Diarization thread: owns the Sortformer stream.
         {
@@ -209,7 +222,8 @@ fn run() -> Result<()> {
         drop(ready_tx);
 
         let mut backend = "vulkan";
-        for _ in 0..2 {
+        let threads = if asr_enabled { 2 } else { 1 };
+        for _ in 0..threads {
             match ready_rx.recv().context("worker thread exited during start-up")? {
                 Ok(gpu) if gpu < 0 => backend = "cpu",
                 Ok(_) => {}
@@ -231,7 +245,14 @@ fn run() -> Result<()> {
 
         let feed = |samples: Vec<f32>| {
             let n = samples.len() as f64 / SAMPLE_RATE as f64;
-            shared.lock().unwrap().audio_in += n;
+            {
+                let mut st = shared.lock().unwrap();
+                st.audio_in += n;
+                if !asr_enabled {
+                    // Progress is min(asr, diar): don't let the missing ASR hold it at 0.
+                    st.asr_audio = st.audio_in;
+                }
+            }
             let block = Arc::new(samples);
             let _ = asr_tx.send(Msg::Audio(block.clone()));
             let _ = diar_tx.send(Msg::Audio(block));
@@ -341,7 +362,19 @@ fn emitter_loop(shared: &Mutex<Shared>) {
             };
             if done {
                 let all = build_utterances(&st.final_words, &[], &st.segments, stable_until);
-                emit(json!({"type": "final", "utterances": all, "audio_s": st.audio_in}));
+                let segments: Vec<serde_json::Value> = st
+                    .segments
+                    .iter()
+                    .map(|s| {
+                        json!({"start": s.start_time, "end": s.end_time, "speaker": s.speaker})
+                    })
+                    .collect();
+                emit(json!({
+                    "type": "final",
+                    "utterances": all,
+                    "segments": segments,
+                    "audio_s": st.audio_in,
+                }));
                 (true, None)
             } else {
                 let pending = &st.final_words[committed_words.min(st.final_words.len())..];

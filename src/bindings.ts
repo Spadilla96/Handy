@@ -1362,7 +1362,31 @@ export type Utterance = { speaker: number; start: number; end: number; text: str
 export type MeetingModelsStatus = { ready: boolean; downloading: boolean; downloaded: number; total: number }
 export type MeetingSummary = { id: number; started_at: number; ended_at: number; title: string; name: string; speaker_count: number; preview: string; source_history_id: number | null; keep_audio: boolean; audio_available: boolean; audio_expires_at: number | null }
 export type PendingMeeting = { enabled: boolean; name: string }
-export type DiarizationJob = { history_id: number; progress: number; backend: string | null }
+export type DiarizationJob = { history_id: number;
+/**
+ * 0.0..=1.0 of the recording processed.
+ */
+progress: number; backend: string | null;
+/**
+ * "diarizing" while speakers are found, then "transcribing".
+ */
+stage: string;
+/**
+ * Transcription windows done / total (both 0 while diarizing).
+ */
+done: number; total: number;
+/**
+ * Time since the job started.
+ */
+elapsed_ms: number;
+/**
+ * Estimated time left for the transcription, once a window is done.
+ */
+remaining_ms: number | null;
+/**
+ * Speaker-attributed transcript so far, shown live while the rest runs.
+ */
+utterances: Utterance[] }
 export type MeetingSavedEvent = { history_id: number; meeting_id: number }
 export type DiarizeFailedEvent = { history_id: number; message: string; cancelled: boolean }
 export type Meeting = { id: number; started_at: number; ended_at: number; title: string; name: string; file_name: string; utterances: Utterance[]; speaker_names: Partial<{ [key in string]: string }>; keep_audio: boolean; audio_available: boolean; audio_expires_at: number | null }

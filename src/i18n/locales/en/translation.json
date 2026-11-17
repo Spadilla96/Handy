@@ -509,7 +509,8 @@
       "viewMeeting": "View meeting",
       "meetingProcessing": "Processing as a meeting… {{percent}}%. Click to cancel.",
       "meetingBusy": "Another recording is being processed as a meeting",
-      "meetingDownloadConfirm": "Processing meetings needs two models (about 850 MB, downloaded once). Download them now?",
+      "meetingStageDiarizing": "Identifying speakers…",
+      "meetingDownloadConfirm": "Processing meetings needs Whisper Large v3 Turbo (about 870 MB, unless you already have it) and Nemotron 3 Diarization (about 107 MB). Download them now?",
       "search": "Search transcriptions…",
       "filter": "Filter",
       "filterAll": "All",
@@ -782,7 +783,7 @@
     "unknownSpeaker": "Speaker ?",
     "models": {
       "title": "Meeting models required",
-      "description": "Meetings use NVIDIA Nemotron 3.5 (transcription) and Nemotron 3 Diarization (speakers). About 850 MB, downloaded once.",
+      "description": "Meetings use Whisper Large v3 Turbo (transcription) and NVIDIA Nemotron 3 Diarization (speakers). Downloaded once.",
       "download": "Download models",
       "downloading": "Downloading… {{percent}}%"
     },

@@ -23,7 +23,11 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::commands::history::{split_at_quiet_points, RetranscribeGuard, RETRANSCRIBE_BUSY};
 use crate::managers::history::{HistoryEntry, HistoryManager};
+use crate::managers::meeting_transcript::{build_utterances, SpeakerSegment, TimedWord};
+use crate::managers::model::ModelManager;
+use crate::managers::transcription::TranscriptionManager;
 
 // ---- Models -----------------------------------------------------------------
 
@@ -33,19 +37,25 @@ struct ModelSpec {
     size: u64,
 }
 
-const ASR_MODEL: ModelSpec = ModelSpec {
-    file: "nemotron-3.5-asr-streaming-0.6b.q8_0.gguf",
-    url: "https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/resolve/main/nemotron-3.5-asr-streaming-0.6b.q8_0.gguf",
-    size: 742_090_464,
-};
-
+/// Speaker segments come from Nemotron-3-Diarization in the worker; the text
+/// comes from Whisper Large v3 Turbo run by Handy itself (see
+/// [`MEETING_ASR_MODELS`]), which is more accurate than the worker's own ASR.
 const DIAR_MODEL: ModelSpec = ModelSpec {
     file: "Nemotron-3-Diarization.q8_0.gguf",
     url: "https://huggingface.co/nvidia/Nemotron-3-Diarization/resolve/main/Nemotron-3-Diarization.q8_0.gguf",
     size: 107_012_128,
 };
 
-const MODELS: [&ModelSpec; 2] = [&ASR_MODEL, &DIAR_MODEL];
+/// Handy model ids for meeting transcription, in order of preference: the
+/// catalog's Whisper Large v3 Turbo GGUF, then the legacy built-in "turbo".
+/// The first one is downloaded when none is present.
+const MEETING_ASR_MODELS: [&str; 2] = [
+    "handy-computer/whisper-large-v3-turbo-gguf/whisper-large-v3-turbo-Q8_0.gguf",
+    "turbo",
+];
+
+/// Share of the progress bar given to diarization; transcription is the rest.
+const DIAR_PROGRESS_SHARE: f64 = 0.1;
 
 #[derive(Clone, Debug, Serialize, Type)]
 pub struct MeetingModelsStatus {
@@ -116,7 +126,21 @@ pub struct DiarizationJob {
     /// 0.0..=1.0 of the recording processed.
     pub progress: f64,
     pub backend: Option<String>,
+    /// "diarizing" while speakers are found, then "transcribing".
+    pub stage: String,
+    /// Transcription windows done / total (both 0 while diarizing).
+    pub done: u32,
+    pub total: u32,
+    /// Time since the job started.
+    pub elapsed_ms: u64,
+    /// Estimated time left for the transcription, once a window is done.
+    pub remaining_ms: Option<u64>,
+    /// Speaker-attributed transcript so far, shown live while the rest runs.
+    pub utterances: Vec<Utterance>,
 }
+
+const STAGE_DIARIZING: &str = "diarizing";
+const STAGE_TRANSCRIBING: &str = "transcribing";
 
 /// Sent as `meeting-saved` when a diarization finishes.
 #[derive(Clone, Debug, Serialize, Type)]
@@ -137,6 +161,7 @@ struct RunningJob {
     info: DiarizationJob,
     child: Arc<Mutex<Child>>,
     cancelled: bool,
+    started: Instant,
 }
 
 pub struct MeetingManager {
@@ -509,10 +534,25 @@ impl MeetingManager {
             .unwrap_or(false)
     }
 
+    /// The downloaded Handy model to transcribe meetings with, if any.
+    fn meeting_asr_model(&self) -> Option<&'static str> {
+        let models = self.app.state::<Arc<ModelManager>>();
+        MEETING_ASR_MODELS.iter().copied().find(|id| {
+            models
+                .get_model_info(id)
+                .map(|m| m.is_downloaded)
+                .unwrap_or(false)
+        })
+    }
+
+    fn models_ready(&self) -> bool {
+        self.model_ready(&DIAR_MODEL) && self.meeting_asr_model().is_some()
+    }
+
     pub fn models_status(&self) -> MeetingModelsStatus {
         let (downloaded, total) = *self.download_progress.lock().unwrap();
         MeetingModelsStatus {
-            ready: MODELS.iter().all(|m| self.model_ready(m)),
+            ready: self.models_ready(),
             downloading: *self.downloading.lock().unwrap(),
             downloaded,
             total,
@@ -535,9 +575,18 @@ impl MeetingManager {
     }
 
     async fn download_missing(&self) -> Result<()> {
-        let missing: Vec<&ModelSpec> = MODELS
-            .iter()
-            .copied()
+        if self.meeting_asr_model().is_none() {
+            // Handy's own model download (its progress shows in Models).
+            let id = MEETING_ASR_MODELS[0];
+            info!("Downloading meeting transcription model {id}");
+            let models = self.app.state::<Arc<ModelManager>>().inner().clone();
+            models
+                .download_model(id)
+                .await
+                .with_context(|| format!("downloading {id}"))?;
+        }
+        let missing: Vec<&ModelSpec> = [&DIAR_MODEL]
+            .into_iter()
             .filter(|m| !self.model_ready(m))
             .collect();
         let total: u64 = missing.iter().map(|m| m.size).sum();
@@ -611,9 +660,14 @@ impl MeetingManager {
         if job_guard.is_some() {
             bail!("Another recording is already being processed as a meeting");
         }
-        if !MODELS.iter().all(|m| self.model_ready(m)) {
+        if !self.model_ready(&DIAR_MODEL) {
             bail!("models-missing");
         }
+        let asr_model = self.meeting_asr_model().context("models-missing")?;
+        // Turbo is loaded into the shared transcription engine, like a
+        // re-transcription: never run both at once.
+        let retranscribe_guard =
+            RetranscribeGuard::acquire().ok_or_else(|| anyhow::anyhow!(RETRANSCRIBE_BUSY))?;
         let worker = self.worker_path()?;
         let recordings = self.recordings_dir();
         let source = recordings.join(&entry.file_name);
@@ -633,10 +687,9 @@ impl MeetingManager {
         std::fs::copy(&source, &wav_path)
             .with_context(|| format!("copying {}", source.display()))?;
 
+        // Diarization only: the worker's own ASR is skipped.
         let mut cmd = Command::new(&worker);
-        cmd.arg("--asr-model")
-            .arg(self.model_path(&ASR_MODEL))
-            .arg("--diar-model")
+        cmd.arg("--diar-model")
             .arg(self.model_path(&DIAR_MODEL))
             .arg("--backend")
             .arg("vulkan")
@@ -668,11 +721,18 @@ impl MeetingManager {
             history_id: entry.id,
             progress: 0.0,
             backend: None,
+            stage: STAGE_DIARIZING.to_string(),
+            done: 0,
+            total: 0,
+            elapsed_ms: 0,
+            remaining_ms: None,
+            utterances: Vec::new(),
         };
         *job_guard = Some(RunningJob {
             info: info.clone(),
             child: child.clone(),
             cancelled: false,
+            started: Instant::now(),
         });
         drop(job_guard);
         let _ = self.app.emit("meeting-diarize-progress", info);
@@ -690,13 +750,23 @@ impl MeetingManager {
 
         let manager = self.clone();
         std::thread::spawn(move || {
+            let _retranscribe_guard = retranscribe_guard;
             let started = Instant::now();
-            let outcome = manager.read_worker_output(stdout, duration);
+            let segments = manager.read_worker_output(stdout, duration);
             {
                 let mut child = child.lock().unwrap();
                 let _ = child.kill();
                 let _ = child.wait();
             }
+            let outcome = segments.and_then(|segments| {
+                info!(
+                    "Diarized history entry #{} into {} segments in {:.0}s; transcribing with {asr_model}",
+                    entry.id,
+                    segments.len(),
+                    started.elapsed().as_secs_f64()
+                );
+                manager.transcribe_meeting(&wav_path, asr_model, &segments)
+            });
             let cancelled = manager
                 .job
                 .lock()
@@ -761,13 +831,82 @@ impl MeetingManager {
         }
     }
 
+    fn is_cancelled(&self) -> bool {
+        self.job
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|j| j.cancelled)
+            .unwrap_or(true)
+    }
+
+    /// Transcribe the meeting recording with `model_id` (loaded into Handy's
+    /// shared engine for the duration) in ~60 s windows and attribute the
+    /// words to `segments`' speakers. The transcript so far is sent with
+    /// every progress update.
+    fn transcribe_meeting(
+        &self,
+        wav_path: &Path,
+        model_id: &str,
+        segments: &[SpeakerSegment],
+    ) -> Result<Vec<Utterance>> {
+        let samples = crate::audio_toolkit::read_wav_samples(wav_path)
+            .with_context(|| format!("reading {}", wav_path.display()))?;
+        let tm = self.app.state::<Arc<TranscriptionManager>>().inner().clone();
+        let swapped = tm.get_current_model().as_deref() != Some(model_id);
+        if swapped {
+            tm.load_model(model_id)?;
+        }
+        let result = (|| -> Result<Vec<Utterance>> {
+            let chunks = split_at_quiet_points(&samples);
+            let total = chunks.len().max(1);
+            let started = Instant::now();
+            let mut words: Vec<TimedWord> = Vec::new();
+            let mut offset = 0usize;
+            self.update_job(|j| {
+                j.stage = STAGE_TRANSCRIBING.to_string();
+                j.progress = DIAR_PROGRESS_SHARE;
+                j.total = total as u32;
+            });
+            for (i, chunk) in chunks.into_iter().enumerate() {
+                if self.is_cancelled() {
+                    bail!("cancelled");
+                }
+                let shift = offset as f64 / 16_000.0;
+                words.extend(tm.transcribe_timed(chunk)?.into_iter().map(|mut w| {
+                    w.start += shift;
+                    w.end += shift;
+                    w
+                }));
+                offset += chunk.len();
+                let done = i + 1;
+                let fraction = done as f64 / total as f64;
+                let progress = DIAR_PROGRESS_SHARE + (1.0 - DIAR_PROGRESS_SHARE) * fraction;
+                let per_chunk = started.elapsed().as_millis() as u64 / done as u64;
+                let utterances = build_utterances(&words, segments);
+                self.update_job(|j| {
+                    j.progress = progress.min(0.99);
+                    j.done = done as u32;
+                    j.remaining_ms = Some(per_chunk * (total - done) as u64);
+                    j.utterances = utterances;
+                });
+            }
+            Ok(build_utterances(&words, segments))
+        })();
+        // Go back to the user's dictation model the next time one is needed.
+        if swapped {
+            tm.reload_model_on_next_use();
+        }
+        result
+    }
+
     /// Follow the worker's JSONL until it exits, forwarding progress, and
-    /// return its final utterances.
+    /// return the diarizer's speaker segments.
     fn read_worker_output(
         &self,
         stdout: std::process::ChildStdout,
         duration: f64,
-    ) -> Result<Vec<Utterance>> {
+    ) -> Result<Vec<SpeakerSegment>> {
         let mut last_error = None;
         for line in BufReader::new(stdout).lines().map_while(|l| l.ok()) {
             let event: WorkerEvent = match serde_json::from_str(&line) {
@@ -784,13 +923,13 @@ impl MeetingManager {
                 }
                 WorkerEvent::Update { asr_s, diar_s } => {
                     let progress = if duration > 0.0 {
-                        (asr_s.min(diar_s) / duration).clamp(0.0, 0.99)
+                        (asr_s.min(diar_s) / duration).clamp(0.0, 1.0) * DIAR_PROGRESS_SHARE
                     } else {
                         0.0
                     };
                     self.update_job(|j| j.progress = progress);
                 }
-                WorkerEvent::Final { utterances } => return Ok(utterances),
+                WorkerEvent::Final { segments } => return Ok(segments),
                 WorkerEvent::Warning { message } => warn!("Meeting worker: {message}"),
                 WorkerEvent::Error { message } => {
                     error!("Meeting worker error: {message}");
@@ -806,6 +945,7 @@ impl MeetingManager {
             let mut guard = self.job.lock().unwrap();
             let Some(job) = guard.as_mut() else { return };
             f(&mut job.info);
+            job.info.elapsed_ms = job.started.elapsed().as_millis() as u64;
             job.info.clone()
         };
         let _ = self.app.emit("meeting-diarize-progress", info);
@@ -937,8 +1077,11 @@ enum WorkerEvent {
         #[serde(default)]
         diar_s: f64,
     },
+    /// In diarization-only mode the utterances are empty; the speaker
+    /// segments are what Handy merges with its own transcription.
     Final {
-        utterances: Vec<Utterance>,
+        #[serde(default)]
+        segments: Vec<SpeakerSegment>,
     },
     Warning {
         message: String,

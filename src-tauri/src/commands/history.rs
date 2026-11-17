@@ -10,7 +10,7 @@ use tauri::{AppHandle, Emitter, State};
 
 /// Error returned when a re-transcription is requested while another runs.
 /// The frontend matches on this exact string.
-const RETRANSCRIBE_BUSY: &str = "retranscribe_busy";
+pub(crate) const RETRANSCRIBE_BUSY: &str = "retranscribe_busy";
 
 /// Only one re-transcription may run at a time: they share one engine, and a
 /// second run that loads a different model swaps it out from under the first
@@ -18,10 +18,10 @@ const RETRANSCRIBE_BUSY: &str = "retranscribe_busy";
 static RETRANSCRIBING: AtomicBool = AtomicBool::new(false);
 
 /// Clears [`RETRANSCRIBING`] when dropped, however the command ends.
-struct RetranscribeGuard;
+pub(crate) struct RetranscribeGuard;
 
 impl RetranscribeGuard {
-    fn acquire() -> Option<Self> {
+    pub(crate) fn acquire() -> Option<Self> {
         RETRANSCRIBING
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .ok()
@@ -217,7 +217,7 @@ const SEARCH_SECS: usize = 5;
 
 /// Split `samples` into windows of about `CHUNK_SECS`, cutting each one at the
 /// quietest 50 ms frame in the last `SEARCH_SECS` so words aren't split.
-fn split_at_quiet_points(samples: &[f32]) -> Vec<&[f32]> {
+pub(crate) fn split_at_quiet_points(samples: &[f32]) -> Vec<&[f32]> {
     let chunk = CHUNK_SECS * SAMPLE_RATE;
     let search = SEARCH_SECS * SAMPLE_RATE;
     let frame = SAMPLE_RATE / 20;

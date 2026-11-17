@@ -508,8 +508,9 @@
       "markMeeting": "Procesar como reunión (separar hablantes)",
       "viewMeeting": "Ver reunión",
       "meetingProcessing": "Procesando como reunión… {{percent}}%. Haz clic para cancelar.",
+      "meetingStageDiarizing": "Identificando hablantes…",
       "meetingBusy": "Ya se está procesando otra grabación como reunión",
-      "meetingDownloadConfirm": "Para procesar reuniones se necesitan dos modelos (unos 850 MB, se descargan una sola vez). ¿Descargarlos ahora?",
+      "meetingDownloadConfirm": "Para procesar reuniones se necesitan Whisper Large v3 Turbo (unos 870 MB, si no lo tienes ya) y Nemotron 3 Diarization (unos 107 MB). ¿Descargarlos ahora?",
       "search": "Buscar en transcripciones…",
       "filter": "Filtro",
       "filterAll": "Todas",
@@ -782,7 +783,7 @@
     "unknownSpeaker": "Hablante ?",
     "models": {
       "title": "Se necesitan los modelos de reuniones",
-      "description": "Las reuniones usan NVIDIA Nemotron 3.5 (transcripción) y Nemotron 3 Diarization (hablantes). Unos 850 MB, se descargan una sola vez.",
+      "description": "Las reuniones usan Whisper Large v3 Turbo (transcripción) y NVIDIA Nemotron 3 Diarization (hablantes). Se descargan una sola vez.",
       "download": "Descargar modelos",
       "downloading": "Descargando… {{percent}}%"
     },

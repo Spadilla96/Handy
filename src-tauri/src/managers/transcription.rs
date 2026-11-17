@@ -21,7 +21,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_specta::Event;
 use transcribe_cpp::{
     Backend, Feature, Model, ModelOptions, RunExtension, RunOptions, Session, StreamOptions, Task,
-    WhisperRunOptions,
+    TimestampKind, WhisperRunOptions,
 };
 use transcribe_rs::{
     onnx::{
@@ -1532,6 +1532,138 @@ impl TranscriptionManager {
         self.maybe_unload_immediately("transcription");
 
         Ok(final_result)
+    }
+
+    /// Transcribe `audio` with the loaded transcribe-cpp model and return its
+    /// words with timestamps (seconds from the start of `audio`), for meetings
+    /// where each word is matched to a diarizer speaker. Uses word timestamps
+    /// when the model provides them; otherwise each segment's time span is
+    /// spread over its words. Never translates, and skips the text
+    /// post-processing of [`Self::transcribe`] (it would break word timing).
+    pub fn transcribe_timed(
+        &self,
+        audio: &[f32],
+    ) -> Result<Vec<crate::managers::meeting_transcript::TimedWord>> {
+        use crate::managers::meeting_transcript::{interpolate_words, TimedWord};
+
+        self.touch_activity();
+        if audio.is_empty() {
+            return Ok(Vec::new());
+        }
+        {
+            let mut is_loading = self.is_loading.lock().unwrap();
+            while *is_loading {
+                is_loading = self.loading_condvar.wait(is_loading).unwrap();
+            }
+        }
+
+        let settings = get_settings(&self.app_handle);
+        let active_model = self
+            .get_current_model()
+            .ok_or_else(|| anyhow::anyhow!("Model is not loaded for transcription."))?;
+        let validated_language =
+            effective_language_for_model(&settings, self.model_manager.as_ref(), &active_model);
+
+        let mut engine = self
+            .lock_engine()
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Model is not loaded for transcription."))?;
+
+        let result = catch_unwind(AssertUnwindSafe(|| -> Result<Vec<TimedWord>> {
+            let LoadedEngine::TranscribeCpp(session) = &mut engine else {
+                return Err(anyhow::anyhow!("Timed transcription needs a transcribe-cpp model"));
+            };
+            let model = session.model();
+            let is_whisper = model.arch() == "whisper";
+            let languages = model.capabilities().languages;
+            let run_options = |timestamps: TimestampKind| {
+                let family = if settings.custom_words.is_empty() || !is_whisper {
+                    None
+                } else {
+                    Some(RunExtension::Whisper(WhisperRunOptions {
+                        initial_prompt: Some(settings.custom_words.join(", ")),
+                        ..Default::default()
+                    }))
+                };
+                let run_plan =
+                    transcribe_cpp_run_plan(false, &validated_language, &languages, false);
+                RunOptions {
+                    task: run_plan.task,
+                    language: run_plan.language,
+                    target_language: run_plan.target_language,
+                    timestamps,
+                    family,
+                    ..Default::default()
+                }
+            };
+            // Word timing is best; a model that can't give it still has
+            // segment timing, which is spread over the words below.
+            let transcript = match session.run(audio, &run_options(TimestampKind::Word)) {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!("Word timestamps unavailable ({e}); using segment timestamps");
+                    session
+                        .run(audio, &run_options(TimestampKind::Segment))
+                        .map_err(|e| {
+                            anyhow::anyhow!("transcribe-cpp transcription failed: {}", e)
+                        })?
+                }
+            };
+            debug!(
+                "Timed transcription: kind={:?}, {} segments, {} words",
+                transcript.timestamp_kind,
+                transcript.segments.len(),
+                transcript.words.len()
+            );
+
+            let words: Vec<TimedWord> = if !transcript.words.is_empty() {
+                transcript
+                    .words
+                    .iter()
+                    .filter(|w| !w.text.trim().is_empty())
+                    .map(|w| TimedWord {
+                        text: w.text.trim().to_string(),
+                        start: w.t0_ms as f64 / 1000.0,
+                        end: w.t1_ms as f64 / 1000.0,
+                    })
+                    .collect()
+            } else if !transcript.segments.is_empty() {
+                transcript
+                    .segments
+                    .iter()
+                    .flat_map(|s| {
+                        let (start, end) = (s.t0_ms as f64 / 1000.0, s.t1_ms as f64 / 1000.0);
+                        interpolate_words(&s.text, start, end)
+                    })
+                    .collect()
+            } else {
+                // No timing at all: spread the text over the whole window.
+                interpolate_words(&transcript.text, 0.0, audio.len() as f64 / 16_000.0)
+            };
+            Ok(words)
+        }));
+
+        match result {
+            Ok(inner) => {
+                self.return_engine(engine, &active_model);
+                inner
+            }
+            Err(panic_payload) => {
+                let panic_msg = panic_payload_message(panic_payload.as_ref());
+                error!(
+                    "Transcription engine panicked: {}. Model has been unloaded.",
+                    panic_msg
+                );
+                {
+                    let mut current_model = self
+                        .current_model_id
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    *current_model = None;
+                }
+                Err(anyhow::anyhow!("Transcription engine panicked: {}", panic_msg))
+            }
+        }
     }
 }
 

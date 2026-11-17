@@ -114,14 +114,28 @@ export const useMeetingStore = create<MeetingStore>()((set, get) => ({
 
   diarize: async (historyId) => {
     // Shown right away; the backend's progress events take over from here.
-    set({ job: { history_id: historyId, progress: 0, backend: null } });
+    set({
+      job: {
+        history_id: historyId,
+        progress: 0,
+        backend: null,
+        stage: "diarizing",
+        done: 0,
+        total: 0,
+        elapsed_ms: 0,
+        remaining_ms: null,
+        utterances: [],
+      },
+    });
     const res = await commands.diarizeHistoryEntry(historyId);
     if (res.status === "error") {
       set({ job: null });
       toast.error(
         res.error === "models-missing"
           ? i18n.t("meetings.errors.modelsMissing")
-          : i18n.t("meetings.diarize.failed", { error: res.error }),
+          : res.error === "retranscribe_busy"
+            ? i18n.t("settings.history.retranscribeBusy")
+            : i18n.t("meetings.diarize.failed", { error: res.error }),
       );
     }
   },
