@@ -816,6 +816,11 @@
       "copied": "Copied",
       "copyRaw": "Copy without speakers",
       "copyRawTitle": "Copy the original transcription (not diarized)",
+      "retranscribe": "Re-transcribe",
+      "retranscribeWithOptions": "Re-transcribe with options…",
+      "retranscribeModelDefault": "Default (Whisper Large v3 Turbo)",
+      "retranscribeConfirm": "Re-transcribe this meeting? Speakers and text are processed again and replace the current transcript; speaker names are reset.",
+      "retranscribeDone": "Meeting transcript updated",
       "copiedRaw": "Original transcription copied",
       "rawUnavailable": "The original transcription is not available for this meeting",
       "save": "Save .md",
@@ -837,7 +842,8 @@
       "audioDeleted": "Recording deleted — the transcript is kept"
     },
     "errors": {
-      "modelsMissing": "Download the meeting models first (Handy → Meetings)."
+      "modelsMissing": "Download the meeting models first (Handy → Meetings).",
+      "noAudio": "This meeting's recording was deleted, so it can't be re-transcribed."
     },
     "howTo": "Record as usual (tip: set the audio source to Microphone + system for calls). Then, in History, click the people icon on that recording to process it as a meeting.",
     "diarize": {

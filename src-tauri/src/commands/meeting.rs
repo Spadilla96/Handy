@@ -6,7 +6,8 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::managers::history::HistoryManager;
 use crate::managers::meeting::{
-    err_string, DiarizationJob, Meeting, MeetingManager, MeetingModelsStatus, MeetingSummary,
+    err_string, DiarizationJob, JobOptions, Meeting, MeetingManager, MeetingModelsStatus,
+    MeetingSummary,
 };
 
 fn manager(app: &AppHandle) -> Arc<MeetingManager> {
@@ -135,6 +136,29 @@ pub async fn diarize_history_entry(app: AppHandle, id: i64) -> Result<(), String
         .ok_or_else(|| format!("History entry {id} not found"))?;
     let m = manager(&app);
     tokio::task::spawn_blocking(move || m.start_diarization(entry, None))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(err_string)
+}
+
+/// Redo a saved meeting (speakers and text) from its own recording, with an
+/// optional text model and audio enhancement. Returns once the worker is
+/// running; the outcome arrives as `meeting-updated` or
+/// `meeting-diarize-failed`.
+#[tauri::command]
+#[specta::specta]
+pub async fn retranscribe_meeting(
+    app: AppHandle,
+    id: i64,
+    model: Option<String>,
+    enhance: Option<bool>,
+) -> Result<(), String> {
+    let options = JobOptions {
+        model,
+        enhance: enhance.unwrap_or(false),
+    };
+    let m = manager(&app);
+    tokio::task::spawn_blocking(move || m.retranscribe_meeting(id, options))
         .await
         .map_err(|e| e.to_string())?
         .map_err(err_string)

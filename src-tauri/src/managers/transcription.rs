@@ -1535,16 +1535,17 @@ impl TranscriptionManager {
     }
 
     /// Transcribe `audio` with the loaded transcribe-cpp model and return its
-    /// words with timestamps (seconds from the start of `audio`), for meetings
-    /// where each word is matched to a diarizer speaker. Uses word timestamps
-    /// when the model provides them; otherwise each segment's time span is
-    /// spread over its words. Never translates, and skips the text
-    /// post-processing of [`Self::transcribe`] (it would break word timing).
+    /// segments with timestamps (seconds from the start of `audio`), for
+    /// meetings, where each word is matched to a diarizer speaker. Segments
+    /// carry their timed words when the model can time words or tokens
+    /// (Whisper can't: its segments come without words). Never translates,
+    /// and skips the text post-processing of [`Self::transcribe`] (it would
+    /// break the timing).
     pub fn transcribe_timed(
         &self,
         audio: &[f32],
-    ) -> Result<Vec<crate::managers::meeting_transcript::TimedWord>> {
-        use crate::managers::meeting_transcript::{interpolate_words, TimedWord};
+    ) -> Result<Vec<crate::managers::meeting_transcript::TimedSegment>> {
+        use crate::managers::meeting_transcript::{TimedSegment, TimedWord};
 
         self.touch_activity();
         if audio.is_empty() {
@@ -1569,13 +1570,20 @@ impl TranscriptionManager {
             .take()
             .ok_or_else(|| anyhow::anyhow!("Model is not loaded for transcription."))?;
 
-        let result = catch_unwind(AssertUnwindSafe(|| -> Result<Vec<TimedWord>> {
+        let result = catch_unwind(AssertUnwindSafe(|| -> Result<Vec<TimedSegment>> {
             let LoadedEngine::TranscribeCpp(session) = &mut engine else {
                 return Err(anyhow::anyhow!("Timed transcription needs a transcribe-cpp model"));
             };
             let model = session.model();
             let is_whisper = model.arch() == "whisper";
-            let languages = model.capabilities().languages;
+            let caps = model.capabilities();
+            let languages = caps.languages;
+            // Ask for the finest timing the model has; asking Whisper for
+            // words fails ("unsupported timestamp granularity").
+            let kind = match caps.max_timestamp_kind {
+                TimestampKind::Word | TimestampKind::Token => caps.max_timestamp_kind,
+                _ => TimestampKind::Segment,
+            };
             let run_options = |timestamps: TimestampKind| {
                 let family = if settings.custom_words.is_empty() || !is_whisper {
                     None
@@ -1596,51 +1604,118 @@ impl TranscriptionManager {
                     ..Default::default()
                 }
             };
-            // Word timing is best; a model that can't give it still has
-            // segment timing, which is spread over the words below.
-            let transcript = match session.run(audio, &run_options(TimestampKind::Word)) {
+            let transcript = match session.run(audio, &run_options(kind)) {
                 Ok(t) => t,
-                Err(e) => {
-                    warn!("Word timestamps unavailable ({e}); using segment timestamps");
+                Err(e) if kind != TimestampKind::Segment => {
+                    warn!("{kind:?} timestamps failed ({e}); using segment timestamps");
                     session
                         .run(audio, &run_options(TimestampKind::Segment))
                         .map_err(|e| {
                             anyhow::anyhow!("transcribe-cpp transcription failed: {}", e)
                         })?
                 }
+                Err(e) => return Err(anyhow::anyhow!("transcribe-cpp transcription failed: {}", e)),
             };
-            debug!(
-                "Timed transcription: kind={:?}, {} segments, {} words",
-                transcript.timestamp_kind,
-                transcript.segments.len(),
-                transcript.words.len()
-            );
 
-            let words: Vec<TimedWord> = if !transcript.words.is_empty() {
-                transcript
-                    .words
-                    .iter()
-                    .filter(|w| !w.text.trim().is_empty())
-                    .map(|w| TimedWord {
+            let secs = |ms: i64| ms as f64 / 1000.0;
+            // (segment index, word): from the words list, or built from the
+            // tokens when only those are timed.
+            let mut words: Vec<(i32, TimedWord)> = transcript
+                .words
+                .iter()
+                .map(|w| {
+                    let word = TimedWord {
                         text: w.text.trim().to_string(),
-                        start: w.t0_ms as f64 / 1000.0,
-                        end: w.t1_ms as f64 / 1000.0,
-                    })
-                    .collect()
-            } else if !transcript.segments.is_empty() {
-                transcript
-                    .segments
-                    .iter()
-                    .flat_map(|s| {
-                        let (start, end) = (s.t0_ms as f64 / 1000.0, s.t1_ms as f64 / 1000.0);
-                        interpolate_words(&s.text, start, end)
-                    })
-                    .collect()
-            } else {
-                // No timing at all: spread the text over the whole window.
-                interpolate_words(&transcript.text, 0.0, audio.len() as f64 / 16_000.0)
-            };
-            Ok(words)
+                        start: secs(w.t0_ms),
+                        end: secs(w.t1_ms),
+                    };
+                    (w.seg_index, word)
+                })
+                .collect();
+            if words.is_empty() {
+                let mut last_word: Option<(i32, i32)> = None;
+                for t in &transcript.tokens {
+                    if t.word_index < 0 {
+                        continue;
+                    }
+                    let key = (t.seg_index, t.word_index);
+                    match words.last_mut() {
+                        Some((_, w)) if last_word == Some(key) => {
+                            w.text.push_str(t.text.trim());
+                            w.end = secs(t.t1_ms);
+                        }
+                        _ => words.push((
+                            t.seg_index,
+                            TimedWord {
+                                text: t.text.trim().to_string(),
+                                start: secs(t.t0_ms),
+                                end: secs(t.t1_ms),
+                            },
+                        )),
+                    }
+                    last_word = Some(key);
+                }
+            }
+            words.retain(|(_, w)| !w.text.is_empty());
+
+            let mut segments: Vec<TimedSegment> = transcript
+                .segments
+                .iter()
+                .enumerate()
+                .map(|(i, s)| TimedSegment {
+                    text: s.text.trim().to_string(),
+                    start: secs(s.t0_ms),
+                    end: secs(s.t1_ms),
+                    words: words
+                        .iter()
+                        .filter(|(seg, _)| *seg == i as i32)
+                        .map(|(_, w)| w.clone())
+                        .collect(),
+                })
+                .collect();
+            let n_segments = segments.len() as i32;
+            let stray: Vec<TimedWord> = words
+                .iter()
+                .filter(|(seg, _)| *seg < 0 || *seg >= n_segments)
+                .map(|(_, w)| w.clone())
+                .collect();
+            if let (Some(first), Some(last)) = (stray.first(), stray.last()) {
+                // Words not tied to a segment: keep them in one of their own.
+                let text: Vec<&str> = stray.iter().map(|w| w.text.as_str()).collect();
+                let segment = TimedSegment {
+                    text: text.join(" "),
+                    start: first.start,
+                    end: last.end,
+                    words: stray.clone(),
+                };
+                segments.push(segment);
+                segments.sort_by(|a, b| a.start.total_cmp(&b.start));
+            }
+            if segments.is_empty() && !transcript.text.trim().is_empty() {
+                // No timing at all: the whole window is one segment.
+                segments.push(TimedSegment {
+                    text: transcript.text.trim().to_string(),
+                    start: 0.0,
+                    end: audio.len() as f64 / 16_000.0,
+                    words: Vec::new(),
+                });
+            }
+
+            debug!(
+                "Timed transcription: kind={:?}, {} segments, {} timed words",
+                transcript.timestamp_kind,
+                segments.len(),
+                words.len()
+            );
+            for s in &segments {
+                debug!(
+                    "  [{:.2}-{:.2}] {}",
+                    s.start,
+                    s.end,
+                    crate::utils::redact_text(&s.text)
+                );
+            }
+            Ok(segments)
         }));
 
         match result {

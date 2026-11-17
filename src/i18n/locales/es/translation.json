@@ -816,6 +816,11 @@
       "copied": "Copiado",
       "copyRaw": "Copiar sin diarizar",
       "copyRawTitle": "Copiar la transcripción original (sin diarizar)",
+      "retranscribe": "Re-transcribir",
+      "retranscribeWithOptions": "Re-transcribir con opciones…",
+      "retranscribeModelDefault": "Por defecto (Whisper Large v3 Turbo)",
+      "retranscribeConfirm": "¿Re-transcribir esta reunión? Se vuelven a procesar hablantes y texto, que reemplazan la transcripción actual; los nombres de hablantes se reinician.",
+      "retranscribeDone": "Transcripción de la reunión actualizada",
       "copiedRaw": "Transcripción original copiada",
       "rawUnavailable": "La transcripción original no está disponible para esta reunión",
       "save": "Guardar .md",
@@ -837,7 +842,8 @@
       "audioDeleted": "Grabación eliminada — la transcripción se conserva"
     },
     "errors": {
-      "modelsMissing": "Primero descarga los modelos de reuniones (Handy → Reuniones)."
+      "modelsMissing": "Primero descarga los modelos de reuniones (Handy → Reuniones).",
+      "noAudio": "La grabación de esta reunión se eliminó, así que no se puede re-transcribir."
     },
     "howTo": "Graba como siempre (consejo: para llamadas usa la fuente de audio Micrófono + sistema). Luego, en el Historial, haz clic en el icono de personas de esa grabación para procesarla como reunión.",
     "diarize": {

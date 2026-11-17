@@ -777,6 +777,7 @@ pub fn run(cli_args: CliArgs) {
             commands::meeting::get_meeting_raw_transcript,
             commands::meeting::save_meeting_markdown,
             commands::meeting::diarize_history_entry,
+            commands::meeting::retranscribe_meeting,
             commands::meeting::cancel_meeting_diarization,
             commands::meeting::get_diarization_job,
             commands::meeting::set_pending_meeting,

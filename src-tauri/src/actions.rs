@@ -85,7 +85,8 @@ fn start_pending_meeting(
             let _ = app.emit(
                 "meeting-diarize-failed",
                 DiarizeFailedEvent {
-                    history_id,
+                    history_id: Some(history_id),
+                    meeting_id: None,
                     message: err_string(e),
                     cancelled: false,
                 },

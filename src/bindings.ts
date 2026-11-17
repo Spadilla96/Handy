@@ -907,6 +907,20 @@ async diarizeHistoryEntry(id: number) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Redo a saved meeting (speakers and text) from its own recording, with an
+ * optional text model and audio enhancement. Returns once the worker is
+ * running; the outcome arrives as `meeting-updated` or
+ * `meeting-diarize-failed`.
+ */
+async retranscribeMeeting(id: number, model: string | null, enhance: boolean | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("retranscribe_meeting", { id, model, enhance }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async cancelMeetingDiarization() : Promise<void> {
     return await TAURI_INVOKE("cancel_meeting_diarization");
 },
@@ -1362,7 +1376,15 @@ export type Utterance = { speaker: number; start: number; end: number; text: str
 export type MeetingModelsStatus = { ready: boolean; downloading: boolean; downloaded: number; total: number }
 export type MeetingSummary = { id: number; started_at: number; ended_at: number; title: string; name: string; speaker_count: number; preview: string; source_history_id: number | null; keep_audio: boolean; audio_available: boolean; audio_expires_at: number | null }
 export type PendingMeeting = { enabled: boolean; name: string }
-export type DiarizationJob = { history_id: number;
+export type DiarizationJob = {
+/**
+ * History entry being turned into a meeting, if that's the job.
+ */
+history_id: number | null;
+/**
+ * Saved meeting being re-transcribed, if that's the job.
+ */
+meeting_id: number | null;
 /**
  * 0.0..=1.0 of the recording processed.
  */
@@ -1388,7 +1410,8 @@ remaining_ms: number | null;
  */
 utterances: Utterance[] }
 export type MeetingSavedEvent = { history_id: number; meeting_id: number }
-export type DiarizeFailedEvent = { history_id: number; message: string; cancelled: boolean }
+export type MeetingUpdatedEvent = { meeting_id: number }
+export type DiarizeFailedEvent = { history_id: number | null; meeting_id: number | null; message: string; cancelled: boolean }
 export type Meeting = { id: number; started_at: number; ended_at: number; title: string; name: string; file_name: string; utterances: Utterance[]; speaker_names: Partial<{ [key in string]: string }>; keep_audio: boolean; audio_available: boolean; audio_expires_at: number | null }
 export type AudioSource = "microphone" | "system" | "microphone_and_system"
 export type MicState = { 

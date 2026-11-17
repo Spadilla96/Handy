@@ -25,7 +25,9 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::history::{split_at_quiet_points, RetranscribeGuard, RETRANSCRIBE_BUSY};
 use crate::managers::history::{HistoryEntry, HistoryManager};
-use crate::managers::meeting_transcript::{build_utterances, SpeakerSegment, TimedWord};
+use crate::managers::meeting_transcript::{
+    attribute_all, build_utterances, SpeakerSegment, TimedSegment,
+};
 use crate::managers::model::ModelManager;
 use crate::managers::transcription::TranscriptionManager;
 
@@ -122,7 +124,10 @@ pub struct Meeting {
 /// The diarization currently running, also sent as `meeting-diarize-progress`.
 #[derive(Clone, Debug, Serialize, Type)]
 pub struct DiarizationJob {
-    pub history_id: i64,
+    /// History entry being turned into a meeting, if that's the job.
+    pub history_id: Option<i64>,
+    /// Saved meeting being re-transcribed, if that's the job.
+    pub meeting_id: Option<i64>,
     /// 0.0..=1.0 of the recording processed.
     pub progress: f64,
     pub backend: Option<String>,
@@ -149,12 +154,39 @@ pub struct MeetingSavedEvent {
     pub meeting_id: i64,
 }
 
+/// Sent as `meeting-updated` when a meeting's re-transcription finishes.
+#[derive(Clone, Debug, Serialize, Type)]
+pub struct MeetingUpdatedEvent {
+    pub meeting_id: i64,
+}
+
 /// Sent as `meeting-diarize-failed` when a diarization errors or is cancelled.
 #[derive(Clone, Debug, Serialize, Type)]
 pub struct DiarizeFailedEvent {
-    pub history_id: i64,
+    pub history_id: Option<i64>,
+    pub meeting_id: Option<i64>,
     pub message: String,
     pub cancelled: bool,
+}
+
+/// Per-run choices for processing a recording as a meeting.
+#[derive(Clone, Debug, Default)]
+pub struct JobOptions {
+    /// Handy model id for the text; `None` = Whisper Large v3 Turbo.
+    pub model: Option<String>,
+    /// High-pass + volume normalization on the audio given to the text model.
+    pub enhance: bool,
+}
+
+/// What a meeting job processes.
+enum JobSource {
+    /// A history entry's recording, saved as a new meeting.
+    History {
+        entry: HistoryEntry,
+        name: Option<String>,
+    },
+    /// A saved meeting's own recording, replacing its transcript.
+    Meeting { id: i64 },
 }
 
 struct RunningJob {
@@ -656,6 +688,19 @@ impl MeetingManager {
         entry: HistoryEntry,
         name: Option<String>,
     ) -> Result<()> {
+        self.start_job(JobSource::History { entry, name }, JobOptions::default())
+    }
+
+    /// Redo a saved meeting from its own recording: speakers and text, with
+    /// the chosen model and audio enhancement. Its speaker names are reset
+    /// (speaker ids change); title, name and audio settings are kept.
+    /// Completion arrives as `meeting-updated`, failure as
+    /// `meeting-diarize-failed`.
+    pub fn retranscribe_meeting(self: &Arc<Self>, id: i64, options: JobOptions) -> Result<()> {
+        self.start_job(JobSource::Meeting { id }, options)
+    }
+
+    fn start_job(self: &Arc<Self>, source: JobSource, options: JobOptions) -> Result<()> {
         let mut job_guard = self.job.lock().unwrap();
         if job_guard.is_some() {
             bail!("Another recording is already being processed as a meeting");
@@ -663,29 +708,71 @@ impl MeetingManager {
         if !self.model_ready(&DIAR_MODEL) {
             bail!("models-missing");
         }
-        let asr_model = self.meeting_asr_model().context("models-missing")?;
-        // Turbo is loaded into the shared transcription engine, like a
-        // re-transcription: never run both at once.
+        let asr_model = match options.model.as_deref().filter(|m| !m.is_empty()) {
+            Some(m) => {
+                let models = self.app.state::<Arc<ModelManager>>();
+                if !models.get_model_info(m).is_some_and(|i| i.is_downloaded) {
+                    bail!("models-missing");
+                }
+                m.to_string()
+            }
+            None => self
+                .meeting_asr_model()
+                .context("models-missing")?
+                .to_string(),
+        };
+        // The text model is loaded into the shared transcription engine, like
+        // a re-transcription: never run both at once.
         let retranscribe_guard =
             RetranscribeGuard::acquire().ok_or_else(|| anyhow::anyhow!(RETRANSCRIBE_BUSY))?;
         let worker = self.worker_path()?;
         let recordings = self.recordings_dir();
-        let source = recordings.join(&entry.file_name);
-        if !source.exists() {
-            bail!("The recording for this entry no longer exists");
-        }
-        let duration = wav_duration_secs(&source)?;
 
-        // The meeting owns a copy of the audio so pruning the dictation
-        // history can never take it away.
-        let file_name = format!(
-            "meeting-{}-{}.wav",
-            entry.timestamp,
-            chrono::Utc::now().timestamp()
-        );
+        // The audio to process. A new meeting owns a copy of the history
+        // recording, so pruning the dictation history can never take it
+        // away; a re-transcription works on the meeting's own file and must
+        // never delete it.
+        let (file_name, owned_copy, history_id, meeting_id) = match &source {
+            JobSource::History { entry, .. } => {
+                let source_wav = recordings.join(&entry.file_name);
+                if !source_wav.exists() {
+                    bail!("The recording for this entry no longer exists");
+                }
+                let file_name = format!(
+                    "meeting-{}-{}.wav",
+                    entry.timestamp,
+                    chrono::Utc::now().timestamp()
+                );
+                std::fs::copy(&source_wav, recordings.join(&file_name))
+                    .with_context(|| format!("copying {}", source_wav.display()))?;
+                (file_name, true, Some(entry.id), None)
+            }
+            JobSource::Meeting { id } => {
+                let file_name = self.meeting_file_name(*id)?;
+                if !self.audio_available(&file_name) {
+                    bail!("no-audio");
+                }
+                (file_name, false, None, Some(*id))
+            }
+        };
         let wav_path = recordings.join(&file_name);
-        std::fs::copy(&source, &wav_path)
-            .with_context(|| format!("copying {}", source.display()))?;
+        let label = match (history_id, meeting_id) {
+            (Some(h), _) => format!("history entry #{h}"),
+            (_, Some(m)) => format!("meeting #{m}"),
+            _ => String::new(),
+        };
+        let discard = move |path: &Path| {
+            if owned_copy {
+                let _ = std::fs::remove_file(path);
+            }
+        };
+        let duration = match wav_duration_secs(&wav_path) {
+            Ok(d) => d,
+            Err(e) => {
+                discard(&wav_path);
+                return Err(e);
+            }
+        };
 
         // Diarization only: the worker's own ASR is skipped.
         let mut cmd = Command::new(&worker);
@@ -709,7 +796,7 @@ impl MeetingManager {
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
-                let _ = std::fs::remove_file(&wav_path);
+                discard(&wav_path);
                 return Err(e).context("starting the meeting worker");
             }
         };
@@ -718,7 +805,8 @@ impl MeetingManager {
         let child = Arc::new(Mutex::new(child));
 
         let info = DiarizationJob {
-            history_id: entry.id,
+            history_id,
+            meeting_id,
             progress: 0.0,
             backend: None,
             stage: STAGE_DIARIZING.to_string(),
@@ -737,8 +825,8 @@ impl MeetingManager {
         drop(job_guard);
         let _ = self.app.emit("meeting-diarize-progress", info);
         info!(
-            "Diarizing history entry #{} ({duration:.0}s) -> {file_name}",
-            entry.id
+            "Diarizing {label} ({duration:.0}s, {file_name}) with {asr_model}, enhance={}",
+            options.enhance
         );
 
         // Worker diagnostics go to Handy's log.
@@ -760,12 +848,11 @@ impl MeetingManager {
             }
             let outcome = segments.and_then(|segments| {
                 info!(
-                    "Diarized history entry #{} into {} segments in {:.0}s; transcribing with {asr_model}",
-                    entry.id,
+                    "Diarized {label} into {} segments in {:.0}s; transcribing",
                     segments.len(),
                     started.elapsed().as_secs_f64()
                 );
-                manager.transcribe_meeting(&wav_path, asr_model, &segments)
+                manager.transcribe_meeting(&wav_path, &asr_model, &segments, options.enhance)
             });
             let cancelled = manager
                 .job
@@ -774,26 +861,19 @@ impl MeetingManager {
                 .take()
                 .map(|j| j.cancelled)
                 .unwrap_or(false);
-            let result = match (cancelled, outcome) {
+            let utterances = match (cancelled, outcome) {
                 (true, _) => Err(anyhow::anyhow!("cancelled")),
-                (false, Ok(utterances)) => {
-                    manager.save_meeting(
-                        &entry,
+                (false, result) => result,
+            };
+            let result = utterances.and_then(|utterances| match &source {
+                JobSource::History { entry, name } => {
+                    let meeting_id = manager.save_meeting(
+                        entry,
                         &file_name,
                         duration,
                         utterances,
                         name.as_deref().unwrap_or(""),
-                    )
-                }
-                (false, Err(e)) => Err(e),
-            };
-            match result {
-                Ok(meeting_id) => {
-                    info!(
-                        "Meeting #{meeting_id} saved from history entry #{} in {:.0}s",
-                        entry.id,
-                        started.elapsed().as_secs_f64()
-                    );
+                    )?;
                     let _ = manager.app.emit(
                         "meeting-saved",
                         MeetingSavedEvent {
@@ -801,18 +881,33 @@ impl MeetingManager {
                             meeting_id,
                         },
                     );
+                    Ok(meeting_id)
                 }
+                JobSource::Meeting { id } => {
+                    manager.replace_transcript(*id, utterances)?;
+                    let _ = manager
+                        .app
+                        .emit("meeting-updated", MeetingUpdatedEvent { meeting_id: *id });
+                    Ok(*id)
+                }
+            });
+            match result {
+                Ok(meeting_id) => info!(
+                    "Meeting #{meeting_id} saved from {label} in {:.0}s",
+                    started.elapsed().as_secs_f64()
+                ),
                 Err(e) => {
                     if cancelled {
-                        info!("Diarization of history entry #{} cancelled", entry.id);
+                        info!("Processing of {label} cancelled");
                     } else {
-                        error!("Diarization of history entry #{} failed: {e:#}", entry.id);
+                        error!("Processing of {label} failed: {e:#}");
                     }
-                    let _ = std::fs::remove_file(&wav_path);
+                    discard(&wav_path);
                     let _ = manager.app.emit(
                         "meeting-diarize-failed",
                         DiarizeFailedEvent {
-                            history_id: entry.id,
+                            history_id,
+                            meeting_id,
                             message: format!("{e:#}"),
                             cancelled,
                         },
@@ -849,9 +944,13 @@ impl MeetingManager {
         wav_path: &Path,
         model_id: &str,
         segments: &[SpeakerSegment],
+        enhance: bool,
     ) -> Result<Vec<Utterance>> {
-        let samples = crate::audio_toolkit::read_wav_samples(wav_path)
+        let mut samples = crate::audio_toolkit::read_wav_samples(wav_path)
             .with_context(|| format!("reading {}", wav_path.display()))?;
+        if enhance {
+            samples = crate::audio_toolkit::enhance::enhance_speech(&samples);
+        }
         let tm = self.app.state::<Arc<TranscriptionManager>>().inner().clone();
         let swapped = tm.get_current_model().as_deref() != Some(model_id);
         if swapped {
@@ -861,7 +960,7 @@ impl MeetingManager {
             let chunks = split_at_quiet_points(&samples);
             let total = chunks.len().max(1);
             let started = Instant::now();
-            let mut words: Vec<TimedWord> = Vec::new();
+            let mut timed: Vec<TimedSegment> = Vec::new();
             let mut offset = 0usize;
             self.update_job(|j| {
                 j.stage = STAGE_TRANSCRIBING.to_string();
@@ -873,17 +972,17 @@ impl MeetingManager {
                     bail!("cancelled");
                 }
                 let shift = offset as f64 / 16_000.0;
-                words.extend(tm.transcribe_timed(chunk)?.into_iter().map(|mut w| {
-                    w.start += shift;
-                    w.end += shift;
-                    w
-                }));
+                timed.extend(
+                    tm.transcribe_timed(chunk)?
+                        .into_iter()
+                        .map(|s| s.shifted(shift)),
+                );
                 offset += chunk.len();
                 let done = i + 1;
                 let fraction = done as f64 / total as f64;
                 let progress = DIAR_PROGRESS_SHARE + (1.0 - DIAR_PROGRESS_SHARE) * fraction;
                 let per_chunk = started.elapsed().as_millis() as u64 / done as u64;
-                let utterances = build_utterances(&words, segments);
+                let utterances = build_utterances(&attribute_all(&timed, segments));
                 self.update_job(|j| {
                     j.progress = progress.min(0.99);
                     j.done = done as u32;
@@ -891,7 +990,7 @@ impl MeetingManager {
                     j.utterances = utterances;
                 });
             }
-            Ok(build_utterances(&words, segments))
+            Ok(build_utterances(&attribute_all(&timed, segments)))
         })();
         // Go back to the user's dictation model the next time one is needed.
         if swapped {
@@ -949,6 +1048,37 @@ impl MeetingManager {
             job.info.clone()
         };
         let _ = self.app.emit("meeting-diarize-progress", info);
+    }
+
+    /// The recording file of a saved meeting ("" once deleted).
+    fn meeting_file_name(&self, id: i64) -> Result<String> {
+        let conn = self.conn()?;
+        Ok(conn.query_row(
+            "SELECT file_name FROM meetings WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Replace a meeting's transcript after a re-transcription. Speaker ids
+    /// change with a new diarization, so their names are reset.
+    fn replace_transcript(&self, id: i64, utterances: Vec<Utterance>) -> Result<()> {
+        let utterances: Vec<Utterance> = utterances
+            .into_iter()
+            .map(|mut u| {
+                u.provisional = false;
+                u
+            })
+            .collect();
+        let conn = self.conn()?;
+        let changed = conn.execute(
+            "UPDATE meetings SET utterances_json = ?1, speaker_names_json = '{}' WHERE id = ?2",
+            params![serde_json::to_string(&utterances)?, id],
+        )?;
+        if changed == 0 {
+            bail!("Meeting {id} no longer exists");
+        }
+        Ok(())
     }
 
     fn save_meeting(

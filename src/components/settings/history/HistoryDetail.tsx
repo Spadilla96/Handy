@@ -16,7 +16,7 @@ import { commands, type HistoryEntry, type ModelInfo } from "@/bindings";
 import { formatDateTime } from "@/utils/dateFormat";
 import { useMeetingStore } from "../../../stores/meetingStore";
 import { AudioPlayer } from "../../ui/AudioPlayer";
-import { speakerColor } from "../meetings/speakerColors";
+import { MeetingJobProgress } from "../meetings/MeetingJobProgress";
 import { IconButton, MeetingButton } from "./HistoryActions";
 
 /** Per-run choices for a re-transcription; empty = the app's defaults. */
@@ -113,21 +113,15 @@ export const HistoryDetail: React.FC<HistoryDetailProps> = ({
   const meetingJob = useMeetingStore((state) =>
     state.job?.history_id === entry.id ? state.job : null,
   );
-  const meetingActive = meetingJob !== null;
-  const [meetingReceivedAt, setMeetingReceivedAt] = useState(() => Date.now());
-  useEffect(() => {
-    setMeetingReceivedAt(Date.now());
-  }, [meetingJob]);
 
   useEffect(() => {
-    if (!retrying) setProgress(null);
-  }, [retrying]);
-
-  useEffect(() => {
-    if (!retrying && !meetingActive) return;
+    if (!retrying) {
+      setProgress(null);
+      return;
+    }
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [retrying, meetingActive]);
+  }, [retrying]);
 
   // Installed models, to pick one for a single re-transcription.
   useEffect(() => {
@@ -390,7 +384,7 @@ export const HistoryDetail: React.FC<HistoryDetailProps> = ({
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto border-t border-mid-gray/20 px-5 py-4">
-        {(retrying || meetingJob) && (
+        {retrying && (
           <style>{`
             @keyframes transcribe-pulse {
               0%, 100% { color: color-mix(in srgb, var(--color-text) 40%, transparent); }
@@ -437,75 +431,7 @@ export const HistoryDetail: React.FC<HistoryDetailProps> = ({
           </div>
         )}
         {meetingJob ? (
-          <div className="space-y-3">
-            <div className="space-y-1.5">
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-mid-gray/20">
-                <div
-                  className="h-full rounded-full bg-logo-primary transition-[width] duration-500"
-                  style={{
-                    width: `${Math.round(meetingJob.progress * 100)}%`,
-                  }}
-                />
-              </div>
-              <div className="flex flex-wrap items-center justify-between gap-x-4 text-xs text-mid-gray tabular-nums">
-                <span>
-                  {Math.round(meetingJob.progress * 100)}% ·{" "}
-                  {meetingJob.stage === "transcribing"
-                    ? t("settings.history.progressParts", {
-                        done: meetingJob.done,
-                        total: meetingJob.total,
-                      })
-                    : t("settings.history.meetingStageDiarizing")}
-                </span>
-                <span>
-                  {t("settings.history.progressElapsed", {
-                    time: formatClock(
-                      meetingJob.elapsed_ms + (now - meetingReceivedAt),
-                    ),
-                  })}
-                  {meetingJob.stage === "transcribing" && (
-                    <>
-                      {" · "}
-                      {meetingJob.remaining_ms !== null
-                        ? t("settings.history.progressRemaining", {
-                            time: formatClock(
-                              meetingJob.remaining_ms -
-                                (now - meetingReceivedAt),
-                            ),
-                          })
-                        : t("settings.history.progressEstimating")}
-                    </>
-                  )}
-                </span>
-              </div>
-            </div>
-            {meetingJob.utterances.length > 0 ? (
-              meetingJob.utterances.map((u, i) => (
-                <p
-                  key={i}
-                  className="text-sm leading-relaxed select-text cursor-text break-words"
-                >
-                  <span className={`font-semibold ${speakerColor(u.speaker)}`}>
-                    {u.speaker > 0
-                      ? t("meetings.speaker", { n: u.speaker })
-                      : t("meetings.unknownSpeaker")}
-                  </span>{" "}
-                  <span className="text-text/90">{u.text}</span>
-                </p>
-              ))
-            ) : (
-              <p
-                className="text-sm leading-relaxed"
-                style={{
-                  animation: "transcribe-pulse 3s ease-in-out infinite",
-                }}
-              >
-                {meetingJob.stage === "transcribing"
-                  ? t("settings.history.transcribing")
-                  : t("settings.history.meetingStageDiarizing")}
-              </p>
-            )}
-          </div>
+          <MeetingJobProgress job={meetingJob} />
         ) : (
           <p
             className={`text-sm leading-relaxed ${

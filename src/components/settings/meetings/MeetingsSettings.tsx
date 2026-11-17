@@ -17,6 +17,8 @@ import {
   Lock,
   MoreHorizontal,
   Pencil,
+  RotateCcw,
+  SlidersHorizontal,
   Trash2,
   Volume2,
   VolumeX,
@@ -26,8 +28,10 @@ import {
   commands,
   type Meeting,
   type MeetingSummary,
+  type ModelInfo,
   type Utterance,
 } from "@/bindings";
+import { MeetingJobProgress } from "./MeetingJobProgress";
 import { speakerColor } from "./speakerColors";
 import { Button } from "../../ui/Button";
 import {
@@ -36,7 +40,10 @@ import {
   type AudioPlayerHandle,
 } from "../../ui/AudioPlayer";
 import { copyToClipboard } from "../history/clipboard";
-import { useMeetingStore } from "../../../stores/meetingStore";
+import {
+  useMeetingStore,
+  type MeetingRetranscribeOptions,
+} from "../../../stores/meetingStore";
 
 const formatTs = (secs: number) => {
   const s = Math.max(0, Math.floor(secs));
@@ -356,7 +363,13 @@ export const MeetingsSettings: React.FC = () => {
   const refreshList = useMeetingStore((state) => state.refreshMeetings);
   const downloadModels = useMeetingStore((state) => state.downloadModels);
   const cancelJob = useMeetingStore((state) => state.cancel);
+  const retranscribe = useMeetingStore((state) => state.retranscribe);
+  const updatedMeeting = useMeetingStore((state) => state.updatedMeeting);
   const [selected, setSelected] = useState<Meeting | null>(null);
+  const [showOptions, setShowOptions] = useState(false);
+  const [asrModels, setAsrModels] = useState<ModelInfo[]>([]);
+  const [optModel, setOptModel] = useState("");
+  const [optEnhance, setOptEnhance] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState<string | null>(null);
@@ -391,6 +404,27 @@ export const MeetingsSettings: React.FC = () => {
   useEffect(() => {
     refreshList();
   }, [refreshList]);
+
+  // A re-transcription replaced the open meeting's transcript: reload it.
+  useEffect(() => {
+    if (!updatedMeeting) return;
+    if (selected?.id === updatedMeeting.id) openMeeting(updatedMeeting.id);
+    // Only react to new updates, not to switching meetings.
+  }, [updatedMeeting]);
+
+  // Installed models that can time their output, to re-transcribe with.
+  useEffect(() => {
+    if (!showOptions) return;
+    void commands.getAvailableModels().then((res) => {
+      if (res.status === "ok") {
+        setAsrModels(
+          res.data.filter(
+            (m) => m.is_downloaded && m.engine_type === "TranscribeCpp",
+          ),
+        );
+      }
+    });
+  }, [showOptions]);
 
   // "View meeting" from History (or a toast) lands here.
   useEffect(() => {
@@ -502,6 +536,24 @@ export const MeetingsSettings: React.FC = () => {
     setPlayhead(null);
     openMeeting(selected.id);
     refreshList();
+  };
+
+  const closeMenu = () => {
+    setMenuOpen(false);
+    setShowOptions(false);
+  };
+
+  const startRetranscribe = async (options?: MeetingRetranscribeOptions) => {
+    closeMenu();
+    if (
+      !selected ||
+      !window.confirm(t("meetings.detail.retranscribeConfirm"))
+    ) {
+      return;
+    }
+    setError(null);
+    setNotice(null);
+    await retranscribe(selected.id, options);
   };
 
   const startRenameSpeaker = (speaker: number) => {
@@ -634,9 +686,92 @@ export const MeetingsSettings: React.FC = () => {
                       aria-hidden="true"
                       tabIndex={-1}
                       className="fixed inset-0 z-10 cursor-default"
-                      onClick={() => setMenuOpen(false)}
+                      onClick={closeMenu}
                     />
-                    <div className="absolute right-0 top-full mt-1 z-20 min-w-48 rounded-lg border border-mid-gray/25 bg-background shadow-lg py-1">
+                    <div
+                      className={`absolute right-0 top-full mt-1 z-20 rounded-lg border border-mid-gray/25 bg-background shadow-lg py-1 ${
+                        showOptions ? "w-72" : "min-w-48"
+                      }`}
+                    >
+                      {selected.audio_available && (
+                        <>
+                          <button
+                            type="button"
+                            disabled={job !== null}
+                            className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-mid-gray/15 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                            onClick={() => void startRetranscribe()}
+                          >
+                            <RotateCcw size={14} />
+                            {t("meetings.detail.retranscribe")}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={job !== null}
+                            className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-mid-gray/15 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                            onClick={() => setShowOptions((v) => !v)}
+                          >
+                            <SlidersHorizontal size={14} />
+                            {t("meetings.detail.retranscribeWithOptions")}
+                          </button>
+                          {showOptions && (
+                            <div className="mx-2 my-1 space-y-2 rounded-md border border-mid-gray/20 bg-mid-gray/5 p-2.5">
+                              <label className="block space-y-1">
+                                <span className="text-xs text-mid-gray">
+                                  {t("settings.history.retranscribeModel")}
+                                </span>
+                                <select
+                                  value={optModel}
+                                  onChange={(e) => setOptModel(e.target.value)}
+                                  className="w-full rounded-md border border-mid-gray/25 bg-background px-2 py-1 text-sm"
+                                >
+                                  <option value="">
+                                    {t(
+                                      "meetings.detail.retranscribeModelDefault",
+                                    )}
+                                  </option>
+                                  {asrModels.map((m) => (
+                                    <option key={m.id} value={m.id}>
+                                      {m.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <label
+                                className="flex items-start gap-2 text-sm cursor-pointer"
+                                title={t(
+                                  "settings.history.retranscribeEnhanceHint",
+                                )}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={optEnhance}
+                                  onChange={(e) =>
+                                    setOptEnhance(e.target.checked)
+                                  }
+                                  className="mt-0.5"
+                                />
+                                <span>
+                                  {t("settings.history.retranscribeEnhance")}
+                                </span>
+                              </label>
+                              <button
+                                type="button"
+                                disabled={job !== null}
+                                onClick={() =>
+                                  void startRetranscribe({
+                                    model: optModel || undefined,
+                                    enhance: optEnhance,
+                                  })
+                                }
+                                className="w-full rounded-md bg-logo-primary px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 cursor-pointer disabled:opacity-40"
+                              >
+                                {t("settings.history.retranscribeRun")}
+                              </button>
+                            </div>
+                          )}
+                          <div className="my-1 border-t border-mid-gray/15" />
+                        </>
+                      )}
                       {selected.audio_available && (
                         <button
                           type="button"
@@ -779,17 +914,21 @@ export const MeetingsSettings: React.FC = () => {
             onTouchMove={markUserScroll}
             onPointerDown={markUserScroll}
           >
-            <Transcript
-              utterances={selected.utterances}
-              nameFor={names}
-              onSeek={
-                selected.audio_available
-                  ? (seconds) => playerRef.current?.seekTo(seconds)
-                  : undefined
-              }
-              activeTime={playhead || null}
-              onSpeakerClick={startRenameSpeaker}
-            />
+            {job?.meeting_id === selected.id ? (
+              <MeetingJobProgress job={job} />
+            ) : (
+              <Transcript
+                utterances={selected.utterances}
+                nameFor={names}
+                onSeek={
+                  selected.audio_available
+                    ? (seconds) => playerRef.current?.seekTo(seconds)
+                    : undefined
+                }
+                activeTime={playhead || null}
+                onSpeakerClick={startRenameSpeaker}
+              />
+            )}
           </div>
         </div>
       );
