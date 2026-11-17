@@ -1117,13 +1117,24 @@ mod tests {
             serde_json::from_str(r#"{"type":"ready","backend":"vulkan"}"#).unwrap();
         assert!(matches!(e, WorkerEvent::Ready { .. }));
         let e: WorkerEvent = serde_json::from_str(
-            r#"{"type":"final","utterances":[{"speaker":1,"start":0.0,"end":1.0,"text":"hi"}],"audio_s":1.0}"#,
+            r#"{"type":"final","utterances":[],"segments":[{"start":0.5,"end":1.5,"speaker":2}],"audio_s":1.0}"#,
         )
         .unwrap();
         match e {
-            WorkerEvent::Final { utterances } => assert_eq!(utterances[0].text, "hi"),
+            WorkerEvent::Final { segments } => assert_eq!(
+                segments,
+                vec![SpeakerSegment {
+                    start: 0.5,
+                    end: 1.5,
+                    speaker: 2
+                }]
+            ),
             _ => panic!("expected final"),
         }
+        // An older worker without segments still parses (no speakers).
+        let e: WorkerEvent =
+            serde_json::from_str(r#"{"type":"final","utterances":[],"audio_s":1.0}"#).unwrap();
+        assert!(matches!(e, WorkerEvent::Final { segments } if segments.is_empty()));
     }
 
     #[test]
