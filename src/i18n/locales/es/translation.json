@@ -808,6 +808,7 @@
       "expiresShort": "Se elimina el {{date}}",
       "back": "Volver",
       "selectPrompt": "Selecciona una reunión para ver su transcripción.",
+      "processingTitle": "Reunión en procesamiento",
       "rename": "Nombrar esta reunión",
       "renameSpeakerHint": "Haz clic en un hablante de arriba para escuchar sus primeras palabras, en el lápiz o en su nombre en la transcripción para renombrarlo, o en cualquier texto para escuchar ese momento.",
       "playFrom": "Reproducir desde aquí",

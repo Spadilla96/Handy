@@ -393,13 +393,52 @@ export const MeetingsSettings: React.FC = () => {
     [t],
   );
 
+  const meetingByHistory = useMeetingStore((state) => state.meetingByHistory);
+  // History entry whose in-progress job the user is watching (new recordings
+  // have no saved meeting yet), plus the meeting it already had at click time.
+  const [watching, setWatching] = useState<{
+    historyId: number;
+    previous: number | undefined;
+  } | null>(null);
+
   const openMeeting = useCallback(async (id: number) => {
     const res = await commands.getMeeting(id);
     if (res.status === "ok") {
+      setWatching(null);
       setSelected(res.data);
       setMenuOpen(false);
     } else setError(res.error);
   }, []);
+
+  // The watched job finished and produced a meeting: open it.
+  useEffect(() => {
+    if (!watching || job) return;
+    const id = meetingByHistory[watching.historyId];
+    if (id !== undefined && id !== watching.previous) openMeeting(id);
+  }, [watching, job, meetingByHistory, openMeeting]);
+
+  const openJob = () => {
+    if (!job) return;
+    if (job.meeting_id !== null) {
+      openMeeting(job.meeting_id);
+    } else if (job.history_id !== null) {
+      setWatching({
+        historyId: job.history_id,
+        previous: meetingByHistory[job.history_id],
+      });
+      setSelected(null);
+      setMenuOpen(false);
+    }
+  };
+  const watchingJob =
+    !!job &&
+    !selected &&
+    watching !== null &&
+    job.meeting_id === null &&
+    job.history_id === watching.historyId;
+  const jobCardActive =
+    !!job &&
+    (job.meeting_id !== null ? selected?.id === job.meeting_id : watchingJob);
 
   useEffect(() => {
     refreshList();
@@ -933,6 +972,17 @@ export const MeetingsSettings: React.FC = () => {
         </div>
       );
     })()
+  ) : watchingJob && job ? (
+    <div className="flex-1 min-w-0 min-h-0 flex flex-col rounded-xl border border-mid-gray/20 overflow-hidden">
+      <div className="shrink-0 px-5 pt-4 pb-3">
+        <h2 className="text-xl font-semibold truncate">
+          {t("meetings.detail.processingTitle")}
+        </h2>
+      </div>
+      <div className="flex-1 min-h-0 overflow-y-auto px-5 pb-4">
+        <MeetingJobProgress job={job} />
+      </div>
+    </div>
   ) : (
     <div className="flex-1 min-w-0 flex items-center justify-center rounded-xl border border-dashed border-mid-gray/30 p-10 text-sm text-mid-gray text-center">
       {t("meetings.detail.selectPrompt")}
@@ -963,7 +1013,17 @@ export const MeetingsSettings: React.FC = () => {
         </div>
 
         {job && (
-          <div className="shrink-0 rounded-lg border border-mid-gray/20 p-3 flex items-center gap-3">
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={openJob}
+            onKeyDown={(e) => e.key === "Enter" && openJob()}
+            className={`shrink-0 rounded-lg border p-3 flex items-center gap-3 cursor-pointer transition-colors ${
+              jobCardActive
+                ? "border-logo-primary bg-logo-primary/15"
+                : "border-mid-gray/20 hover:bg-mid-gray/10"
+            }`}
+          >
             <Loader2
               size={16}
               className="shrink-0 animate-spin text-logo-primary"
@@ -986,7 +1046,10 @@ export const MeetingsSettings: React.FC = () => {
               aria-label={t("meetings.diarize.cancel")}
               title={t("meetings.diarize.cancel")}
               className="size-7 shrink-0 inline-flex items-center justify-center rounded-md hover:bg-mid-gray/20 cursor-pointer"
-              onClick={cancelJob}
+              onClick={(e) => {
+                e.stopPropagation();
+                void cancelJob();
+              }}
             >
               <X size={14} />
             </button>

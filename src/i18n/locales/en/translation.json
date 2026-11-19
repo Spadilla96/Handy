@@ -808,6 +808,7 @@
       "expiresShort": "Deleted on {{date}}",
       "back": "Back",
       "selectPrompt": "Select a meeting to see its transcript.",
+      "processingTitle": "Meeting being processed",
       "rename": "Name this meeting",
       "renameSpeakerHint": "Click a speaker above to hear their first words, the pencil or a name in the transcript to rename them, or any text to hear that moment.",
       "playFrom": "Play from here",
