@@ -688,7 +688,12 @@ impl MeetingManager {
         entry: HistoryEntry,
         name: Option<String>,
     ) -> Result<()> {
-        self.start_job(JobSource::History { entry, name }, JobOptions::default())
+        // Meetings always get the audio enhancement for the best text quality.
+        let options = JobOptions {
+            model: None,
+            enhance: true,
+        };
+        self.start_job(JobSource::History { entry, name }, options)
     }
 
     /// Redo a saved meeting from its own recording: speakers and text, with

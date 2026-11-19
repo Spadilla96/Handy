@@ -369,7 +369,7 @@ export const MeetingsSettings: React.FC = () => {
   const [showOptions, setShowOptions] = useState(false);
   const [asrModels, setAsrModels] = useState<ModelInfo[]>([]);
   const [optModel, setOptModel] = useState("");
-  const [optEnhance, setOptEnhance] = useState(false);
+  const [optEnhance, setOptEnhance] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState<string | null>(null);
