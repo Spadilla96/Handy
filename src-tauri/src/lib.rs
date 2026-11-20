@@ -250,7 +250,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     let initial_theme = tray::get_current_theme(app_handle);
 
     // Choose the appropriate initial icon based on theme
-    let initial_icon_path = tray::get_icon_path(initial_theme, tray::TrayIconState::Idle, false);
+    let initial_icon_path = tray::get_icon_path(initial_theme, tray::TrayIconState::Idle, false, 0);
 
     let mut tray_builder = TrayIconBuilder::new()
         .icon(

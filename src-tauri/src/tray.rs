@@ -95,6 +95,11 @@ struct TrayInner {
     next_seq: u64,
     /// Sequence number of the request that produced `desired`.
     desired_seq: u64,
+    /// Current frame of the recording animation (index into the frame set).
+    frame: usize,
+    /// The recording animation thread is alive. Set and cleared only while
+    /// holding the state lock so a new recording can never miss a restart.
+    anim_running: bool,
 }
 
 /// Tauri managed state owning the tray's desired/applied snapshots.
@@ -111,6 +116,8 @@ impl TrayState {
             icons: HashMap::new(),
             next_seq: 0,
             desired_seq: 0,
+            frame: 0,
+            anim_running: false,
         }))
     }
 
@@ -190,7 +197,21 @@ fn windows_taskbar_theme() -> Option<AppTheme> {
 /// `warning` overlays a badge on the idle icon while keyboard shortcuts are
 /// blocked (macOS Secure Input); recording/transcribing states keep their
 /// normal icons so in-flight activity stays recognizable.
-pub fn get_icon_path(theme: AppTheme, state: TrayIconState, warning: bool) -> &'static str {
+pub fn get_icon_path(
+    theme: AppTheme,
+    state: TrayIconState,
+    warning: bool,
+    frame: usize,
+) -> &'static str {
+    if state == TrayIconState::Recording {
+        // Recording is animated: the sound bars move and the mic head blinks
+        // between the base colour and red, so it stands out in the tray.
+        match theme {
+            AppTheme::Dark => return RECORDING_FRAMES_DARK[frame % RECORDING_FRAMES],
+            AppTheme::Light => return RECORDING_FRAMES_LIGHT[frame % RECORDING_FRAMES],
+            AppTheme::Colored => return "resources/recording.png",
+        }
+    }
     if warning && state == TrayIconState::Idle {
         return match theme {
             AppTheme::Dark => "resources/tray_idle_warning.png",
@@ -203,22 +224,128 @@ pub fn get_icon_path(theme: AppTheme, state: TrayIconState, warning: bool) -> &'
     match (theme, state) {
         // Dark theme uses light icons
         (AppTheme::Dark, TrayIconState::Idle) => "resources/tray_idle.png",
-        (AppTheme::Dark, TrayIconState::Recording) => "resources/tray_recording.png",
         (AppTheme::Dark, TrayIconState::Transcribing) => "resources/tray_transcribing.png",
         // Light theme uses dark icons
         (AppTheme::Light, TrayIconState::Idle) => "resources/tray_idle_dark.png",
-        (AppTheme::Light, TrayIconState::Recording) => "resources/tray_recording_dark.png",
         (AppTheme::Light, TrayIconState::Transcribing) => "resources/tray_transcribing_dark.png",
-        // Colored theme uses pink icons (for Linux)
+        // Colored theme (Linux)
         (AppTheme::Colored, TrayIconState::Idle) => "resources/handy.png",
-        (AppTheme::Colored, TrayIconState::Recording) => "resources/recording.png",
         (AppTheme::Colored, TrayIconState::Transcribing) => "resources/transcribing.png",
+        // Recording returned above.
+        (_, TrayIconState::Recording) => "resources/recording.png",
     }
 }
 
+/// Number of frames in the recording animation.
+const RECORDING_FRAMES: usize = 8;
+/// Time each recording frame stays on screen.
+const RECORDING_FRAME_MS: u64 = 220;
+const RECORDING_FRAMES_DARK: [&str; RECORDING_FRAMES] = [
+    "resources/tray_recording_0.png",
+    "resources/tray_recording_1.png",
+    "resources/tray_recording_2.png",
+    "resources/tray_recording_3.png",
+    "resources/tray_recording_4.png",
+    "resources/tray_recording_5.png",
+    "resources/tray_recording_6.png",
+    "resources/tray_recording_7.png",
+];
+const RECORDING_FRAMES_LIGHT: [&str; RECORDING_FRAMES] = [
+    "resources/tray_recording_dark_0.png",
+    "resources/tray_recording_dark_1.png",
+    "resources/tray_recording_dark_2.png",
+    "resources/tray_recording_dark_3.png",
+    "resources/tray_recording_dark_4.png",
+    "resources/tray_recording_dark_5.png",
+    "resources/tray_recording_dark_6.png",
+    "resources/tray_recording_dark_7.png",
+];
+
 /// Sets the recording state shown by the tray (icon + Cancel/model menu).
 pub fn set_tray_state(app: &AppHandle, state: TrayIconState) {
-    sync_tray_with(app, |inner| inner.icon_state = state);
+    sync_tray_with(app, |inner| {
+        if state == TrayIconState::Recording && inner.icon_state != TrayIconState::Recording {
+            inner.frame = 0;
+        }
+        inner.icon_state = state;
+    });
+}
+
+/// Advances the recording animation by one frame. Returns `false` once the
+/// tray is no longer recording (and marks the animation thread as stopped).
+///
+/// Only the icon of the already-computed snapshot is swapped: re-deriving the
+/// whole desired state (settings, model list, ...) five times a second would be
+/// wasteful, and the menu cannot change from a frame advance.
+fn animation_tick(app: &AppHandle) -> bool {
+    let Some(state) = app.try_state::<TrayState>() else {
+        return false;
+    };
+    let frame = {
+        let mut inner = state.lock();
+        if inner.icon_state != TrayIconState::Recording {
+            inner.anim_running = false;
+            inner.frame = 0;
+            return false;
+        }
+        inner.frame = (inner.frame + 1) % RECORDING_FRAMES;
+        inner.frame
+    };
+
+    let path = get_icon_path(
+        get_current_theme(app),
+        TrayIconState::Recording,
+        false,
+        frame,
+    );
+    let needs_icon = !state.lock().icons.contains_key(path);
+    let loaded_icon = if needs_icon {
+        load_tray_icon(
+            app.path()
+                .resolve(path, tauri::path::BaseDirectory::Resource),
+        )
+        .map_err(|err| error!("Failed to load tray frame '{path}': {err}"))
+        .ok()
+    } else {
+        None
+    };
+
+    let schedule = {
+        let mut guard = state.lock();
+        // Plain reborrow so the fields below can be borrowed independently.
+        let inner = &mut *guard;
+        if let Some(image) = loaded_icon {
+            inner.icons.insert(path, image);
+        }
+        // A newer snapshot (e.g. Transcribing) may have landed meanwhile; only
+        // touch the icon if we are still recording.
+        if inner.icon_state != TrayIconState::Recording {
+            return true;
+        }
+        match inner.desired.as_mut() {
+            Some(desired) if desired.menu.busy && desired.icon_path != path => {
+                desired.icon_path = path;
+                !std::mem::replace(&mut inner.pending, true)
+            }
+            _ => false,
+        }
+    };
+    if schedule {
+        post_apply(app);
+    }
+    true
+}
+
+fn spawn_recording_animation(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(RECORDING_FRAME_MS));
+            if !animation_tick(&app) {
+                break;
+            }
+        }
+    });
 }
 
 /// Re-syncs the tray after something other than the recording state changed
@@ -251,12 +378,19 @@ fn sync_tray_with(app: &AppHandle, update: impl FnOnce(&mut TrayInner)) {
 
     // Record intent and claim a sequence number in one critical section, so
     // sequence order == the order in which state changes were requested.
-    let (seq, icon_state) = {
+    let (seq, icon_state, frame, start_animation) = {
         let mut inner = state.lock();
         update(&mut inner);
         inner.next_seq += 1;
-        (inner.next_seq, inner.icon_state)
+        let start_animation = inner.icon_state == TrayIconState::Recording && !inner.anim_running;
+        if start_animation {
+            inner.anim_running = true;
+        }
+        (inner.next_seq, inner.icon_state, inner.frame, start_animation)
     };
+    if start_animation {
+        spawn_recording_animation(app);
+    }
 
     // Tray not built yet (early secure-input monitor callbacks). The intent
     // is kept and picked up by the first sync after the tray exists.
@@ -264,7 +398,7 @@ fn sync_tray_with(app: &AppHandle, update: impl FnOnce(&mut TrayInner)) {
         return;
     }
 
-    let desired = compute_desired(app, icon_state);
+    let desired = compute_desired(app, icon_state, frame);
 
     // Decode the icon off the main thread, once per path, outside the lock.
     let needs_icon = !state.lock().icons.contains_key(desired.icon_path);
@@ -311,7 +445,7 @@ fn sync_tray_with(app: &AppHandle, update: impl FnOnce(&mut TrayInner)) {
     }
 }
 
-fn compute_desired(app: &AppHandle, icon_state: TrayIconState) -> TrayDesired {
+fn compute_desired(app: &AppHandle, icon_state: TrayIconState, frame: usize) -> TrayDesired {
     let settings = settings::get_settings(app);
     let theme = get_current_theme(app);
     let warning = crate::secure_input::tray_warning_active(app);
@@ -327,7 +461,7 @@ fn compute_desired(app: &AppHandle, icon_state: TrayIconState) -> TrayDesired {
     downloaded_models.sort_by(|a, b| a.1.cmp(&b.1));
 
     TrayDesired {
-        icon_path: get_icon_path(theme, icon_state, warning),
+        icon_path: get_icon_path(theme, icon_state, warning, frame),
         menu: MenuInputs {
             busy: icon_state.is_busy(),
             overlay_minimized: crate::overlay::is_overlay_minimized(),
@@ -750,6 +884,29 @@ mod tests {
         };
         assert_ne!(recording.icon_path, transcribing.icon_path);
         assert_eq!(recording.menu, transcribing.menu);
+    }
+
+    #[test]
+    fn recording_animation_frames_exist_and_cycle() {
+        use super::{
+            get_icon_path, AppTheme, RECORDING_FRAMES, RECORDING_FRAMES_DARK,
+            RECORDING_FRAMES_LIGHT,
+        };
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for path in RECORDING_FRAMES_DARK
+            .iter()
+            .chain(RECORDING_FRAMES_LIGHT.iter())
+        {
+            assert!(root.join(path).is_file(), "missing tray frame {path}");
+        }
+        // Frames advance, wrap around, and are distinct from the idle icon.
+        let f0 = get_icon_path(AppTheme::Dark, TrayIconState::Recording, false, 0);
+        let f1 = get_icon_path(AppTheme::Dark, TrayIconState::Recording, false, 1);
+        let wrap = get_icon_path(AppTheme::Dark, TrayIconState::Recording, false, RECORDING_FRAMES);
+        let idle = get_icon_path(AppTheme::Dark, TrayIconState::Idle, false, 0);
+        assert_ne!(f0, f1);
+        assert_eq!(f0, wrap);
+        assert_ne!(f0, idle);
     }
 
     #[test]
